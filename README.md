@@ -158,20 +158,20 @@ Ingest schedule (MLB + NBA, Mon–Sun)
 
 ### File structure
 ```
-mustwatch/
-  config.py       # All static data: weights, marquee players, rivalries, season config
-  models.py       # Frozen dataclasses: TeamContext, RawEvent, ScoredEvent, WeeklyBrief
-  mlb.py          # MLB Stats API client
-  nba.py          # ESPN NBA API client
-  enrich.py       # Build enriched events, apply time filter, detect flags
-  score.py        # Scoring functions (pure, no I/O)
-  rank.py         # Filter, sort, return top-N candidates
-  editorial.py    # CLI review + override
-  explain.py      # LLM explanation generation
-  render.py       # HTML/email rendering
-  run.py          # Entrypoint — orchestrates full pipeline
-  templates/
-    weekly.html   # {{key}} template (matches existing repo pattern)
+config.py       # All static data: weights, marquee players, rivalries, season config
+models.py       # Frozen dataclasses: TeamContext, RawEvent, ScoredEvent, WeeklyBrief
+mlb.py          # MLB Stats API client
+nba.py          # ESPN NBA API client
+enrich.py       # Build enriched events, apply time filter, detect flags
+score.py        # Scoring functions (pure, no I/O)
+rank.py         # Filter, sort, return top-N candidates
+editorial.py    # CLI review + override
+explain.py      # LLM explanation generation
+render.py       # HTML/email rendering
+run.py          # Entrypoint — orchestrates full pipeline
+index.html      # Published page — served at bdavey.co/mustwatch/
+templates/
+  weekly.html   # {{key}} template
 ```
 
 ### Milestone 1 (terminal dry-run only)

@@ -3,7 +3,7 @@ render.py — HTML rendering for Must Watch This Week.
 
 Takes the final top-5 ScoredEvent list + explanations, injects them into
 templates/weekly.html using simple {{key}} replacement, and writes the result
-to mustwatch/weekly.html.
+to index.html.
 
 Public API
 ----------
@@ -447,7 +447,7 @@ def render_weekly(
     review:       dict | None = None,
 ) -> Path:
     """
-    Render the final top-5 list to mustwatch/weekly.html.
+    Render the final top-5 list to index.html.
 
     Parameters
     ----------
