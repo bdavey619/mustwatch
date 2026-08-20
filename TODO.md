@@ -43,8 +43,13 @@ Result: marquee opener 36.0 -> 60.0; a nothing opener sits at 41.0, so openers
 are lifted into contention without being lifted indiscriminately. Week 12 with
 real standings still outranks Week 1.
 
+Scoped to all four sports deliberately, not football alone — see DECISIONS.md.
+Early-season competitive balance shifts for MLB (first 20 games) and NBA (first
+10) as a result. Phase multipliers for those two are unchanged.
+
 - [ ] Revisit once a real opening week has run — the neutral values are reasoned, not measured
-- [ ] A preseason prior (prior-year finish, or preseason odds) would beat a flat neutral, and would also fix the April MLB case properly
+- [ ] Diff a re-scored April week against a published edition to see how far MLB balance actually moves
+- [ ] A preseason prior (prior-year finish, or preseason odds) would beat a flat neutral for all four sports, and is the natural next step
 
 ---
 

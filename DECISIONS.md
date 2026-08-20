@@ -200,4 +200,10 @@ College football is exempt from the neutral path: the preseason AP poll gives ev
 
 **Calibration check:** A marquee opener moves 36.0 → 60.0. A nothing opener (Panthers/Titans) sits at 41.0, and the same marquee matchup in Week 12 with real standings scores 76.8. The fix lifts openers into contention without lifting them indiscriminately, and preserves the ordering between an opener and a genuine late-season contest.
 
-**Impact beyond football:** MLB and NBA keep their phase curves, so nothing changes there. But the sample-sufficiency rule applies to them too, which shifts competitive balance for the first 20 MLB games and 10 NBA games — an April 9-3 vs 3-9 matchup now scores balance 12.0 rather than 4.0. That is the same bug being fixed consistently, and it is correct, but it is a real change to April output. A preseason prior seeded from prior-year finish would be better than a flat neutral for all four sports; noted in TODO.md.
+**Scope — all four sports, decided deliberately:** the sample-sufficiency rule was scoped to every sport rather than to football alone. Confining it to NFL and NCAAF was considered and rejected.
+
+The rule is not a football rule. Twelve games into a baseball season a 3-9 team is not established as bad, and scoring it as a .250 team is the same error the NFL opener exposed — it is only *conspicuous* in football because three games of seventeen is a fifth of the season where three of 162 is noise. Fixing it in one sport and not the others would leave the engine deciding the same question two different ways depending on which league it happened to be looking at, which is difficult to defend in a product whose entire premise is comparing across leagues.
+
+The concrete effect: competitive balance shifts for the first 20 MLB games and the first 10 NBA games. An April 9-3 vs 3-9 matchup now scores balance 12.0 rather than 4.0. Phase multipliers for MLB and NBA are untouched, so the change is confined to early-season balance and does not touch the stakes model, which has real standings from opening day in both sports.
+
+A preseason prior seeded from prior-year finish would beat a flat neutral for all four sports and is the natural next step; noted in TODO.md.
