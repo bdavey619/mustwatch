@@ -4,6 +4,16 @@ Chronological record of key product and implementation decisions.
 
 ---
 
+## 2026-08-20 — Mon/Wed/Fri generation, published directly to main
+
+**Decision:** The scheduled workflow runs three times a week — Monday, Wednesday, and Friday at 10:00 UTC (6:00 AM ET under EDT) — and commits `index.html` straight to `main`. There is no machine-owned branch and no PR review gate.
+
+**Rationale:** Two changes, one entry. On cadence: a Monday-only list goes stale by midweek, since games already played are filtered out and the remaining slate shrinks as the week runs down. Regenerating Wednesday and Friday refreshes the top 5 against what is actually still upcoming, without moving to a nightly product. On publishing: direct-to-`main` is what the workflow has always done, and the review gate imagined in the 2026-04-16 entry was never built. Documenting the real behavior beats documenting an intention. The editorial gate still exists for manual runs — `--auto` accepts the default top 5, and a custom order still requires the interactive local workflow.
+
+**Pattern:** `run.py` anchors the ranking window to the Monday of the current week, so a Wednesday or Friday run covers Mon–Sun and the timing filter drops anything already started. Each run publishes only if `index.html` actually changed. `workflow_dispatch` remains wired in for off-schedule runs. Cron is evaluated in UTC and does not follow DST — switch to `0 11 * * 1,3,5` when EST is active to hold 6:00 AM ET.
+
+---
+
 ## 2026-04-14 — Weekly cadence, not nightly
 
 **Decision:** Publish once weekly (Monday morning), not daily or nightly.
@@ -84,13 +94,15 @@ Chronological record of key product and implementation decisions.
 
 ---
 
-## 2026-04-16 — Scheduled automation via mustwatch-auto branch + PR review gate
+## 2026-04-16 — Scheduled automation via mustwatch-auto branch + PR review gate *(superseded 2026-08-20)*
 
 **Decision:** Weekly generation runs automatically via GitHub Actions. Output is committed to a machine-owned branch (`mustwatch-auto`) and a PR is opened against `main` for review. Publishing requires a deliberate merge — automation never writes directly to `main`.
 
 **Rationale:** Blind publishing to `main` would remove the editorial gate that is designed into Phase 1. A PR-based approach preserves review without requiring a manual run every Monday. If the output is fine, merge takes seconds. If it needs adjustment, the branch can be replaced by running the workflow again after a local tweak or by doing a full manual run. The `--auto` flag accepts the default top 5; a custom order still requires the interactive local workflow.
 
 **Pattern:** `workflow_dispatch` is also wired in, so the workflow can be triggered manually at any time (e.g. mid-week if a major storyline emerges or if Monday's run needs a redo).
+
+**Superseded by the 2026-08-20 entry below.** The branch + PR review gate described here was never implemented — `generate.yml` has always committed `index.html` directly to `main`. This entry is retained as a record of the original intent.
 
 ---
 

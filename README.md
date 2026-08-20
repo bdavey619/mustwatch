@@ -45,15 +45,15 @@ The page design and email format are secondary. The core value is the scoring en
 | Parameter | Decision |
 |---|---|
 | Sports | MLB + NBA only |
-| Cadence | Weekly |
-| Published | Monday morning |
+| Cadence | Weekly ranking, regenerated Mon / Wed / Fri |
+| Published | Monday, Wednesday, Friday morning |
 | Ranking window | Monday (if upcoming) through Sunday |
 | Time filter | Exclude events already started or within 1 hour of start |
 | Output | Unified top 5 ranked list |
 | Editorial | Manual override allowed and expected |
 
 **Timing labels:**
-- Events on the generation day (Monday): labeled `TONIGHT`
+- Events on the generation day (Monday, Wednesday, or Friday): labeled `TONIGHT`
 - All other events: labeled with weekday + date (e.g., `Thursday, April 17`)
 - No list sections or splits — single unified ranking. Labels are display-only.
 
@@ -245,4 +245,4 @@ The product is successful when:
 
 ---
 
-*Last updated: April 14, 2026*
+*Last updated: August 20, 2026*
