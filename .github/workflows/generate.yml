@@ -33,7 +33,12 @@ jobs:
       - name: Generate Must Watch page
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python run.py --auto
+        # --sports is pinned to the two validated leagues. NFL and NCAAF are
+        # implemented and unit-tested but have never run against a live ESPN
+        # response — add them here only after a manual
+        # `python run.py --diag --sports mlb,nba,nfl` confirms the payloads
+        # parse and the cross-sport ranking looks sane.
+        run: python run.py --auto --sports mlb,nba
 
       - name: Check for changes to index.html
         id: check_changes

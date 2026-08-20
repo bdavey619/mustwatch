@@ -2,6 +2,42 @@
 
 ---
 
+## NOW (Validate the football fetchers)
+
+NFL and NCAAF are implemented and unit-tested but have **never run against a
+live ESPN response** — the build environment blocked `site.api.espn.com`, so
+every schema assumption is unverified.
+
+- [ ] Run `python run.py --diag --sports mlb,nba,nfl` and confirm NFL schedule + standings parse
+- [ ] Confirm `playoffSeed` is actually populated in the NFL standings payload — the stakes model leans on it, and falls back to win-pct tiers when it is absent
+- [ ] Confirm the NFL standings nesting matches `nfl._walk_standings` expectations (conference → division → entries)
+- [ ] Verify NFL abbreviations returned by ESPN match the `config.py` keys — check WSH, LAR, LAC, LV, JAX in particular
+- [ ] Run `python run.py --diag --sports all` and confirm NCAAF FBS filtering (`groups=80`) returns a sane slate, not 200 games
+- [ ] **Verify every abbreviation in `NCAAF_RIVALRIES` and `NCAAF_PROGRAM_PRESTIGE` against a live response** — ESPN's college abbreviations are not stable across endpoints, and a wrong key silently disables a rivalry rather than erroring
+- [ ] Confirm `curatedRank` uses 99 for unranked as assumed
+- [ ] Sanity-check cross-sport calibration on a real week: does a Week 12 NFL divisional game land sensibly against a September MLB pennant race?
+- [ ] Once NFL validates, change `.github/workflows/generate.yml` to `--sports mlb,nba,nfl`
+- [ ] Review the NFL marquee player list for accuracy before it first publishes
+
+---
+
+## BUG — MLB wild card leaders score as "not in the race"
+
+Found while adding football; **pre-existing and unrelated**, left unfixed so the
+football work would not silently change published MLB rankings.
+
+`score._in_mlb_race` treats `wc_games_back is None` as "no wild card data", but
+`models.py` documents `None` as "holds a wild card spot" (the MLB API returns
+`"-"` for teams in position). A team leading the wild card while more than 5
+games back in its division therefore reads as out of the race, dropping stakes
+from 22 to 15.
+
+- [ ] Confirm the MLB API's `"-"` semantics for `wildCardGamesBack`
+- [ ] Fix `_in_mlb_race` to treat a held wild card spot as being in the race
+- [ ] Re-score the last few weeks and check how much the top 5 moves before merging
+
+---
+
 ## NOW (Product definition + quality refinement)
 
 The engine is running and publishing weekly. Before expanding scope, make sure
@@ -24,7 +60,7 @@ the product is actually doing what the vision says it should.
 **Operational baseline**
 - [ ] Confirm the automated Monday run is reliable — check the last 2–3 workflow runs for failures or stale data
 - [ ] Review marquee player list for accuracy (injuries, trades, callups since initial setup)
-- [ ] Keep observing weekly output; do not expand sport coverage until 4+ consecutive weeks feel right without heavy override
+- [ ] Keep observing weekly output; hold further sport expansion (NHL, WNBA) until 4+ consecutive weeks feel right without heavy override
 
 **PRODUCT SHARPNESS (Storyline + Time Value)**
 - [ ] Evaluate whether top 5 actually reflects the strongest STORYLINES of the week (not just score output)
@@ -62,7 +98,9 @@ Do not start until Phase 1 is running weekly and validated.
 - [ ] Milestone / record proximity detection
 - [ ] Betting market implied closeness as balance signal
 - [ ] Rivalry list expansion + auto-detection
-- [ ] NHL support
+- [ ] NHL support (free official API at `api-web.nhle.com`)
+- [ ] WNBA support — the only realistic fill for the mid-June-to-August window, where MLB is currently the only major team sport in season
 - [ ] Premier League support
 - [ ] "Must Watch Tonight" nightly lightweight variant
 - [ ] PGA / ATP (requires separate scoring model — not team-vs-team)
+- [ ] Generalize the "MLB absent from top 5" diagnostics block — it is hardcoded to MLB and predates multi-sport coverage

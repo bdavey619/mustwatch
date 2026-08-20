@@ -251,8 +251,8 @@ def _diag_mlb_analysis(candidates: list[ScoredEvent]) -> str:
     gap = cutoff_score - mlb_top.total_score
     near_str = "near miss (within 5 pts)" if gap < 5.0 else "well outside — thin MLB week"
 
-    all_mlb = [se for _, se in mlb]
-    top5_nba = [se for se in candidates[:_TOP_N] if se.raw.sport == "NBA"]
+    all_mlb   = [se for _, se in mlb]
+    top5_other = [se for se in candidates[:_TOP_N] if se.raw.sport != "MLB"]
 
     def row(lbl: str, val: str) -> str:
         return (
@@ -283,9 +283,10 @@ def _diag_mlb_analysis(candidates: list[ScoredEvent]) -> str:
     if all_mlb:
         avg_stk = sum(se.stakes_score for se in all_mlb) / len(all_mlb)
         rows.append(row("Avg MLB stakes", f'{avg_stk:.1f} / 30 ({len(all_mlb)} events)'))
-    if top5_nba:
-        avg_nba = sum(se.stakes_score for se in top5_nba) / len(top5_nba)
-        rows.append(row("Avg top-5 NBA stakes", f'{avg_nba:.1f} / 30'))
+    if top5_other:
+        avg_other = sum(se.stakes_score for se in top5_other) / len(top5_other)
+        other_sports = ", ".join(sorted({se.raw.sport for se in top5_other}))
+        rows.append(row(f"Avg top-5 {other_sports} stakes", f'{avg_other:.1f} / 30'))
 
     return (
         '<div class="diag-mlb">'
@@ -399,11 +400,18 @@ def render_diagnostics(candidates: list[ScoredEvent]) -> str:
         '</script>'
     )
 
+    # Build one filter per sport actually present in the pool, so the control
+    # row reflects the week rather than a hardcoded two-sport assumption.
+    present = sorted({se.raw.sport for se in candidates})
+    buttons = ''.join(
+        f'<button class="diag-filter-btn" onclick="diagFilter(this,\'{_esc(s)}\')">'
+        f'{_esc(s)}</button>'
+        for s in present
+    )
     filters = (
         '<div class="diag-filters">'
         '<button class="diag-filter-btn active" onclick="diagFilter(this,\'all\')">All</button>'
-        '<button class="diag-filter-btn" onclick="diagFilter(this,\'NBA\')">NBA</button>'
-        '<button class="diag-filter-btn" onclick="diagFilter(this,\'MLB\')">MLB</button>'
+        + buttons +
         '</div>'
     )
 

@@ -48,10 +48,21 @@ def clean_narrative_text(text: str) -> str:
 
 
 def _record(ctx) -> str:
+    if ctx.ties:
+        return f"{ctx.wins}-{ctx.losses}-{ctx.ties} ({ctx.win_pct:.3f})"
     return f"{ctx.wins}-{ctx.losses} ({ctx.win_pct:.3f})"
 
 
 def _l10(ctx) -> str:
+    """
+    Last-ten record, or None when the sport has none.
+
+    Football has no L10 (see nfl.py) and the stored 0-0 is a placeholder, not a
+    fact. Returning None keeps it out of the prompt entirely — feeding the model
+    "L10 0-0" would invite it to describe a team as having lost ten straight.
+    """
+    if ctx.sport in ("NFL", "NCAAF"):
+        return None
     return f"L10 {ctx.l10_wins}-{ctx.l10_losses}"
 
 
@@ -75,12 +86,31 @@ def _standing_line(ctx) -> str:
             else:
                 wc = f", {ctx.wc_games_back:.1f} GB from wild card"
         return div + wc
-    else:  # NBA
-        rank = ctx.conference_rank
+    if ctx.sport == "NFL":
+        seed = ctx.conference_rank
         conf = ctx.conference or ""
-        if rank:
-            return f"#{rank} in {conf}"
-        return ""
+        parts = []
+        if seed and conf:
+            # Seeds 1–4 are division winners; 5–7 are wild cards.
+            slot = "division lead" if seed <= 4 else ("wild card" if seed <= 7 else "outside the field")
+            parts.append(f"#{seed} seed in the {conf} ({slot})")
+        elif seed:
+            parts.append(f"#{seed} seed")
+        if ctx.division:
+            parts.append(ctx.division)
+        return ", ".join(parts)
+
+    if ctx.sport == "NCAAF":
+        if ctx.ap_rank:
+            return f"ranked #{ctx.ap_rank}"
+        return "unranked"
+
+    # NBA
+    rank = ctx.conference_rank
+    conf = ctx.conference or ""
+    if rank:
+        return f"#{rank} in {conf}"
+    return ""
 
 
 def _clean_stakes_detail(detail: str) -> str:
@@ -96,11 +126,17 @@ def _clean_stakes_detail(detail: str) -> str:
 
 def _flag_labels(flags: list[str]) -> str:
     label_map = {
-        "rivalry":           "rivalry game",
-        "playoff_rematch":   "playoff rematch",
-        "first_place_clash": "first-place clash",
-        "elimination_game":  "elimination/play-in game",
-        "ace_duel":          "ace duel",
+        "rivalry":             "rivalry game",
+        "playoff_rematch":     "playoff rematch",
+        "first_place_clash":   "first-place clash",
+        "elimination_game":    "elimination/play-in game",
+        "ace_duel":            "ace duel",
+        "superstar_matchup":   "superstar matchup",
+        "momentum_mismatch":   "momentum mismatch",
+        "seed_pressure":       "seeding gap",
+        "division_clash":      "divisional game",
+        "conference_clash":    "conference game",
+        "undefeated_showdown": "both teams undefeated",
     }
     return ", ".join(label_map.get(f, f) for f in flags) if flags else "none"
 
@@ -113,14 +149,19 @@ def _build_event_block(i: int, se: ScoredEvent) -> str:
     date_str = ev.game_date.strftime("%A, %B %-d")
     venue    = ev.venue or "venue TBD"
 
-    away_line = (
-        f"  Away — {away.name}: {_record(away)}, {_l10(away)}, "
-        f"streak: {_streak(away)}, {_standing_line(away)}"
-    )
-    home_line = (
-        f"  Home — {home.name}: {_record(home)}, {_l10(home)}, "
-        f"streak: {_streak(home)}, {_standing_line(home)}"
-    )
+    def _team_line(label: str, ctx) -> str:
+        parts = [f"{_record(ctx)}"]
+        l10 = _l10(ctx)
+        if l10:
+            parts.append(l10)
+        parts.append(f"streak: {_streak(ctx)}")
+        standing = _standing_line(ctx)
+        if standing:
+            parts.append(standing)
+        return f"  {label} — {ctx.name}: " + ", ".join(parts)
+
+    away_line = _team_line("Away", away)
+    home_line = _team_line("Home", home)
 
     star_line = ""
     if se.star_power_detail and se.star_power_detail != "no marquee players":

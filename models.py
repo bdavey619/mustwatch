@@ -13,7 +13,7 @@ class TeamContext:
     """Enriched team data used for scoring."""
     abbr: str               # Team abbreviation (as returned by API)
     name: str               # Display name
-    sport: str              # "MLB" or "NBA"
+    sport: str              # "MLB", "NBA", "NFL", or "NCAAF"
     wins: int
     losses: int
     win_pct: float
@@ -23,22 +23,35 @@ class TeamContext:
     streak_n: int
     games_played: int       # For season-phase multiplier
 
-    # MLB-specific (None for NBA)
+    # MLB-specific (None for other sports)
     division_rank: int | None   = None
     games_back: float | None    = None      # From division leader; None = first place
     wild_card_rank: int | None  = None
     wc_games_back: float | None = None      # From last wild card spot; None = in WC
 
-    # NBA-specific (None for MLB)
-    conference: str | None      = None      # "East" or "West"
+    # NBA / NFL — conference standing
+    # NBA: conference is "East"/"West", rank is 1–15 (playoffSeed).
+    # NFL: conference is "AFC"/"NFC", rank is the 1–16 playoff seed.
+    conference: str | None      = None
     conference_rank: int | None = None      # 1 = best in conference
+
+    # NFL / NCAAF — ties are possible in football
+    ties: int = 0
+
+    # NFL: division name, e.g. "AFC East". NCAAF: conference name, e.g. "SEC".
+    division: str | None = None
+
+    # NCAAF-specific — AP poll rank (1–25); None = unranked.
+    # Poll position, not win pct, is the meaningful quality signal in college
+    # football, where schedules are wildly uneven and records are not comparable.
+    ap_rank: int | None = None
 
 
 @dataclass(frozen=True)
 class RawEvent:
     """Normalized game event before scoring."""
     game_id: str
-    sport: str              # "MLB" or "NBA"
+    sport: str              # "MLB", "NBA", "NFL", or "NCAAF"
     home_abbr: str
     away_abbr: str
     home_name: str
@@ -52,6 +65,15 @@ class RawEvent:
     # MLB probable starters (name only; populated when available from schedule API)
     home_probable_pitcher: str | None = None
     away_probable_pitcher: str | None = None
+
+    # NFL / NCAAF
+    week: int | None         = None   # Week number within the season
+    neutral_site: bool       = False  # Bowl games, Week 0 kickoff games, etc.
+    is_conference_game: bool = False  # NCAAF conference matchup
+
+    # Short event label from the source, e.g. "College Football Playoff
+    # Semifinal" or "AFC Championship". Display/context only — never scored.
+    event_note: str | None = None
 
 
 @dataclass

@@ -6,9 +6,10 @@ import sys
 from datetime import datetime, date
 
 from config import (
-    RIVALRIES, PLAYOFF_REMATCHES, MARQUEE_PITCHERS, MARQUEE_PLAYERS,
+    RIVALRIES, NCAAF_RIVALRIES, PLAYOFF_REMATCHES, MARQUEE_PITCHERS, MARQUEE_PLAYERS,
     TIMING_FILTER_SECONDS,
     NBA_PLAYOFF_RANK_CUTOFF, NBA_PLAYIN_RANK_CUTOFF,
+    NFL_PLAYOFF_SEED_CUTOFF,
 )
 from models import RawEvent, TeamContext, ScoredEvent
 
@@ -77,9 +78,17 @@ def detect_flags(
                     NBA_PLAYOFF_RANK_CUTOFF < away_rank <= NBA_PLAYIN_RANK_CUTOFF):
                 flags.append("elimination_game")
 
+    # Football postseason is single elimination by construction — unlike a
+    # best-of-seven, the loser's season is over in every round.
+    if ev.is_postseason and sport == "NFL":
+        flags.append("elimination_game")
+
+    if ev.is_postseason and sport == "NCAAF" and _is_cfp_game(ev):
+        flags.append("elimination_game")
+
     # --- Tier 2 (only if Tier 1 not set) ---
     if "elimination_game" not in flags:
-        if pair in RIVALRIES:
+        if pair in RIVALRIES or pair in NCAAF_RIVALRIES:
             flags.append("rivalry")
 
         if pair in PLAYOFF_REMATCHES:
@@ -125,7 +134,43 @@ def detect_flags(
             if abs(h_rank - a_rank) >= 3:
                 flags.append("seed_pressure")
 
+        # --- Football-only narrative flags ---
+        if ev.sport == "NFL":
+            # division_clash — divisional games swing tiebreakers and are played
+            # twice a year with standings implications attached to both.
+            if (home_ctx.division and away_ctx.division and
+                    home_ctx.division == away_ctx.division):
+                flags.append("division_clash")
+
+        if ev.sport == "NCAAF":
+            # conference_clash — the path to a conference title, and in the
+            # expanded-playoff era the path to the national bracket.
+            if ev.is_conference_game:
+                flags.append("conference_clash")
+
+        # undefeated_showdown — both teams unbeaten with a real sample behind
+        # them. In football one loss reshapes a season, so an unbeaten team
+        # meeting another is the sport's scarcest setup.
+        if ev.sport in ("NFL", "NCAAF"):
+            if _is_undefeated(home_ctx) and _is_undefeated(away_ctx):
+                flags.append("undefeated_showdown")
+
     return flags
+
+
+def _is_undefeated(ctx: TeamContext) -> bool:
+    """Unbeaten with enough games played for it to mean something."""
+    return ctx.losses == 0 and ctx.games_played >= 4
+
+
+def _is_cfp_game(ev: RawEvent) -> bool:
+    """
+    True for College Football Playoff games — the only college postseason games
+    that are genuinely elimination events. The other ~40 bowls are exhibitions.
+    """
+    note = (ev.event_note or "").lower()
+    return any(k in note for k in
+               ("playoff", "semifinal", "quarterfinal", "national championship"))
 
 
 def _is_first_place_clash(home: TeamContext, away: TeamContext) -> bool:
@@ -134,10 +179,23 @@ def _is_first_place_clash(home: TeamContext, away: TeamContext) -> bool:
         home_gb = home.games_back if home.games_back is not None else 0.0
         away_gb = away.games_back if away.games_back is not None else 0.0
         return home_gb <= 1.0 and away_gb <= 1.0
-    else:  # NBA
-        home_rank = home.conference_rank or 99
-        away_rank = away.conference_rank or 99
-        return home_rank <= 2 and away_rank <= 2
+
+    if home.sport == "NFL":
+        # NFL seeds 1–4 in each conference are exactly the four division
+        # winners, so "both leading their division" is a seed test.
+        home_seed = home.conference_rank or 99
+        away_seed = away.conference_rank or 99
+        return home_seed <= 4 and away_seed <= 4
+
+    if home.sport == "NCAAF":
+        # No standings table to lead — poll position already drives stakes and
+        # star power, so this flag stays off rather than triple-counting it.
+        return False
+
+    # NBA
+    home_rank = home.conference_rank or 99
+    away_rank = away.conference_rank or 99
+    return home_rank <= 2 and away_rank <= 2
 
 
 def build_scored_event(
