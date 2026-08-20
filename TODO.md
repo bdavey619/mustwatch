@@ -2,6 +2,69 @@
 
 ---
 
+## NOW (Validate the football fetchers)
+
+NFL and NCAAF are implemented and unit-tested but have **never run against a
+live ESPN response** — the build environment blocked `site.api.espn.com`, so
+every schema assumption is unverified.
+
+- [ ] Run `python run.py --diag --sports mlb,nba,nfl` and confirm NFL schedule + standings parse
+- [ ] Confirm `playoffSeed` is actually populated in the NFL standings payload — the stakes model leans on it, and falls back to win-pct tiers when it is absent
+- [ ] Confirm the NFL standings nesting matches `nfl._walk_standings` expectations (conference → division → entries)
+- [ ] Verify NFL abbreviations returned by ESPN match the `config.py` keys — check WSH, LAR, LAC, LV, JAX in particular
+- [ ] Run `python run.py --diag --sports all` and confirm NCAAF FBS filtering (`groups=80`) returns a sane slate, not 200 games
+- [ ] **Verify every abbreviation in `NCAAF_RIVALRIES` and `NCAAF_PROGRAM_PRESTIGE` against a live response** — ESPN's college abbreviations are not stable across endpoints, and a wrong key silently disables a rivalry rather than erroring
+- [ ] Confirm `curatedRank` uses 99 for unranked as assumed
+- [ ] Sanity-check cross-sport calibration on a real week: does a Week 12 NFL divisional game land sensibly against a September MLB pennant race?
+- [ ] Once NFL validates, change `.github/workflows/generate.yml` to `--sports mlb,nba,nfl`
+- [ ] Review the NFL marquee player list for accuracy before it first publishes
+
+---
+
+## DONE — Season opener scoring (fixed 2026-08-20)
+
+An NFL Week 1 marquee matchup scored 36/100 and lost to a routine September MLB
+game at 70. Three components bottomed out at once because no games had been
+played — the model read *absence of record data* as *evidence of a bad matchup*.
+
+Fixed by making that distinction explicit:
+
+- `MIN_GAMES_FOR_RECORD` per sport; below it, quality is neutral (6.0) rather
+  than the bottom of the win-pct curve
+- Stakes fall back to `NEUTRAL_STAKES_BASE` — how much one game structurally
+  matters in that sport — instead of "no meaningful stakes"
+- The phase multiplier is not applied to that baseline; it exists to discount a
+  standings claim, and there is none to discount
+- `SEASON_PHASE_MULTIPLIERS_BY_SPORT`: football uses 0.90/0.95/1.00. MLB and NBA
+  keep 0.60/0.85/1.00 unchanged
+- New `season_opener` narrative flag (5 pts, football only)
+
+Result: marquee opener 36.0 -> 60.0; a nothing opener sits at 41.0, so openers
+are lifted into contention without being lifted indiscriminately. Week 12 with
+real standings still outranks Week 1.
+
+Scoped to all four sports deliberately, not football alone — see DECISIONS.md.
+Early-season competitive balance shifts for MLB (first 20 games) and NBA (first
+10) as a result. Phase multipliers for those two are unchanged.
+
+- [ ] Revisit once a real opening week has run — the neutral values are reasoned, not measured
+- [ ] Diff a re-scored April week against a published edition to see how far MLB balance actually moves
+- [ ] A preseason prior (prior-year finish, or preseason odds) would beat a flat neutral for all four sports, and is the natural next step
+
+---
+
+## DONE — MLB wild card race bug (fixed 2026-08-20)
+
+`score._in_mlb_race` read wild card position from `wc_games_back is None`, which
+means both "holds a wild card spot" and "no data". Race membership now keys off
+`wild_card_rank`. Separately, `mlb.py` defaulted a missing `wildCardRank` to 0,
+which reads as better than first place; it now parses to None.
+
+- [ ] Confirm against live standings that wild card holders are picked up — `python validate_sources.py --sports mlb` exercises exactly this case
+- [ ] Compare a re-scored week against the last published edition to see how much the top 5 actually moves
+
+---
+
 ## NOW (Product definition + quality refinement)
 
 The engine is running and publishing weekly. Before expanding scope, make sure
@@ -24,7 +87,7 @@ the product is actually doing what the vision says it should.
 **Operational baseline**
 - [ ] Confirm the automated Monday run is reliable — check the last 2–3 workflow runs for failures or stale data
 - [ ] Review marquee player list for accuracy (injuries, trades, callups since initial setup)
-- [ ] Keep observing weekly output; do not expand sport coverage until 4+ consecutive weeks feel right without heavy override
+- [ ] Keep observing weekly output; hold further sport expansion (NHL, WNBA) until 4+ consecutive weeks feel right without heavy override
 
 **PRODUCT SHARPNESS (Storyline + Time Value)**
 - [ ] Evaluate whether top 5 actually reflects the strongest STORYLINES of the week (not just score output)
@@ -62,7 +125,9 @@ Do not start until Phase 1 is running weekly and validated.
 - [ ] Milestone / record proximity detection
 - [ ] Betting market implied closeness as balance signal
 - [ ] Rivalry list expansion + auto-detection
-- [ ] NHL support
+- [ ] NHL support (free official API at `api-web.nhle.com`)
+- [ ] WNBA support — the only realistic fill for the mid-June-to-August window, where MLB is currently the only major team sport in season
 - [ ] Premier League support
 - [ ] "Must Watch Tonight" nightly lightweight variant
 - [ ] PGA / ATP (requires separate scoring model — not team-vs-team)
+- [ ] Generalize the "MLB absent from top 5" diagnostics block — it is hardcoded to MLB and predates multi-sport coverage

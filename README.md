@@ -6,7 +6,7 @@ A weekly, objective ranking of the most compelling upcoming sports events.
 
 ## 1. Product Overview
 
-**What it is:** A sports editorial engine that looks at the week's upcoming MLB and NBA events and surfaces the 5 most narratively compelling ones — with specific, evidence-based reasoning for why each made the list.
+**What it is:** A sports editorial engine that looks at the week's upcoming events across MLB, NBA, NFL and college football and surfaces the 5 most narratively compelling ones — with specific, evidence-based reasoning for why each made the list.
 
 **What problem it solves:** There are too many sports events and too little signal. Most fans don't have time to monitor every league, watch SportsCenter, or track every storyline. This product narrows the field and answers a single question with editorial sharpness:
 
@@ -44,7 +44,7 @@ The page design and email format are secondary. The core value is the scoring en
 
 | Parameter | Decision |
 |---|---|
-| Sports | MLB + NBA only |
+| Sports | MLB + NBA (validated) · NFL + NCAAF (built, awaiting live validation) |
 | Cadence | Weekly |
 | Published | Monday morning |
 | Ranking window | Monday (if upcoming) through Sunday |
@@ -82,10 +82,18 @@ The primary driver. Determines how much the result of this game matters.
 - No meaningful stakes: 5
 
 Adjusted by **season-phase multiplier** for regular season games:
-- First 20% of season: ×0.60
-- Mid-season (20–70%): ×0.85
-- Final 30%: ×1.00
-- Postseason: no multiplier (already at max)
+
+| Phase | MLB / NBA | NFL / NCAAF |
+|---|---|---|
+| First 20% | ×0.60 | ×0.90 |
+| Mid (20–70%) | ×0.85 | ×0.95 |
+| Final 30% | ×1.00 | ×1.00 |
+
+Postseason takes no multiplier (already at max). The curve is gentler for football because a 17-game season has no games that are 40% less consequential than the rest — the first 20% of it is Weeks 1–4.
+
+**Sample sufficiency.** Below `MIN_GAMES_FOR_RECORD` games (MLB 20, NBA 10, NFL 4, NCAAF 3), a win/loss record is noise and is not read as information: team quality returns an explicit neutral, and stakes fall back to a per-sport baseline reflecting how much one game structurally matters. The multiplier is *not* applied to that baseline — it exists to discount a standings claim, and there is none to discount.
+
+Without this, a Week 1 NFL marquee matchup scored 3.0/30 on stakes and 36/100 overall, because "nobody has played yet" was indistinguishable from "both teams are terrible".
 
 ### Competitive Balance (0–20 pts)
 Both teams must be good for the game to be watchable. Uses `min(team1_quality, team2_quality) × 2` — one weak team tanks the score regardless of opponent strength.
@@ -109,15 +117,23 @@ Rules-based bonuses for specific detectable conditions. **Phase 1 supports six f
 
 | Flag | Sport | Tier | Points |
 |---|---|---|---|
-| `elimination_game` | NBA | 1 | 20 (no stacking) |
-| `rivalry` | MLB/NBA | 2 | 8 |
+| `elimination_game` | NBA / NFL / NCAAF | 1 | 20 (no stacking) |
+| `rivalry` | all | 2 | 8 |
+| `undefeated_showdown` | NFL/NCAAF | 2 | 7 |
+| `season_opener` | NFL/NCAAF | 2 | 5 |
 | `playoff_rematch` | MLB/NBA | 2 | 6 |
 | `ace_duel` | MLB | 2 | 6 |
-| `first_place_clash` | MLB/NBA | 2 | 5 |
+| `division_clash` | NFL | 2 | 6 |
+| `first_place_clash` | MLB/NBA/NFL | 2 | 5 |
+| `superstar_matchup` | NBA | 2 | 4 |
+| `momentum_mismatch` | NBA | 2 | 4 |
+| `conference_clash` | NCAAF | 2 | 4 |
 | `marquee_starter` | MLB | 2 | 3 |
+| `seed_pressure` | NBA | 2 | 3 |
 
 `ace_duel` fires when both probable starters are in `MARQUEE_PITCHERS`.
 `marquee_starter` fires when exactly one starter is in `MARQUEE_PITCHERS` (mutually exclusive with `ace_duel`).
+`elimination_game` fires for **every** NFL playoff game (single elimination by construction) but only for College Football Playoff games — the other ~40 bowls are exhibitions and score as ordinary events.
 
 Tier 1 flags do not stack — `elimination_game` alone = 20.
 Tier 2 flags stack but are **capped at 12** (rivalry + playoff_rematch = 14 → capped at 12).
@@ -138,10 +154,37 @@ Tier 2 flags stack but are **capped at 12** (rivalry + playoff_rematch = 14 → 
 ## 6. Data / Architecture Direction
 
 ### Data sources
-| Sport | Source | Auth |
-|---|---|---|
-| MLB | `statsapi.mlb.com/api/v1` | None (official, free) |
-| NBA | `site.api.espn.com/apis/site/v2/sports/basketball/nba` | None (unofficial) |
+| Sport | Source | Auth | Status |
+|---|---|---|---|
+| MLB | `statsapi.mlb.com/api/v1` | None (official, free) | Live |
+| NBA | `site.api.espn.com/.../basketball/nba` | None (unofficial) | Live |
+| NFL | `site.api.espn.com/.../football/nfl` | None (unofficial) | Built, unvalidated |
+| NCAAF | `site.api.espn.com/.../football/college-football` | None (unofficial) | Built, unvalidated |
+
+All four fetchers return the same `(list[RawEvent], dict[str, TeamContext])` shape. Contexts are namespaced by sport (`"NFL:KC"` vs `"MLB:KC"`), so merging across leagues is collision-free.
+
+**Sport selection.** `run.py --sports mlb,nba,nfl` (or `--sports all`) controls which leagues are ingested. Default is `mlb,nba,nfl`; NCAAF is opt-in. The scheduled workflow is pinned to `mlb,nba` until NFL has been validated against a live response.
+
+**Validating a source before enabling it.** `test_football.py` proves the parsing logic against fixtures; it cannot prove the live payload has the shape those fixtures assume. `validate_sources.py` closes that gap — it calls the real endpoints and checks every assumption the fetchers make, reporting PASS/FAIL/WARN per item and exiting non-zero on any failure:
+
+```
+python validate_sources.py                     # all sports
+python validate_sources.py --sports nfl        # one sport
+python validate_sources.py --date 2026-11-07   # probe a specific week
+```
+
+Run it in-season — several checks (poll population, FBS slate size, college abbreviation coverage) are only meaningful when games are scheduled. Do not enable a sport in the workflow while it reports a FAIL.
+
+**Where football differs from the pro basketball/baseball model:**
+
+| Concern | Handling |
+|---|---|
+| Ties | NFL only. `win_pct = (W + 0.5T) / GP`; `games_played` includes ties. |
+| No last-ten | Ten games is most of a football season. `l10` stays 0-0 and momentum is scored from the win/loss streak instead (`score._football_momentum`). The placeholder is never shown to the LLM. |
+| Preseason | NFL preseason and Pro Bowl are dropped at ingest — exhibitions must never compete with pennant-race baseball. |
+| College quality | Win pct is meaningless across uneven schedules, so NCAAF quality comes from AP/CFP poll position. |
+| College star power | No marquee player list — rosters turn over annually. Program prestige (`NCAAF_PROGRAM_PRESTIGE`) stands in, deliberately independent of poll rank so rank is not counted three times. |
+| Bowls vs. playoff | CFP games score 29–30; ordinary bowls score 15. |
 
 ### Phase 1 pipeline (high level)
 ```
@@ -162,6 +205,8 @@ config.py       # All static data: weights, marquee players, rivalries, season c
 models.py       # Frozen dataclasses: TeamContext, RawEvent, ScoredEvent, WeeklyBrief
 mlb.py          # MLB Stats API client
 nba.py          # ESPN NBA API client
+nfl.py          # ESPN NFL API client
+ncaaf.py        # ESPN college football client (poll-driven)
 enrich.py       # Build enriched events, apply time filter, detect flags
 score.py        # Scoring functions (pure, no I/O)
 rank.py         # Filter, sort, return top-N candidates
@@ -170,6 +215,8 @@ explain.py      # LLM explanation generation
 render.py       # HTML/email rendering
 run.py          # Entrypoint — orchestrates full pipeline
 index.html      # Published page — served at bdavey.co/mustwatch/
+test_football.py # Offline tests — parsing + scoring logic (no network)
+validate_sources.py # Live schema validation — run before enabling a sport
 templates/
   weekly.html   # {{key}} template
 ```
@@ -215,9 +262,11 @@ Not yet: `editorial.py`, `explain.py`, `render.py`, HTML template, email output.
 
 ## 9. Future Directions
 
-**Additional sports** (not before Phase 1 is stable):
-- NHL — natural fit; high-stakes playoff structure
+**Additional sports:**
+- NFL, NCAAF — implemented; see Section 6 for validation status
+- NHL — natural fit; high-stakes playoff structure; free official API at `api-web.nhle.com`
 - Premier League — strong narrative, strong rivalry infrastructure
+- WNBA — the only realistic way to cover the mid-June-to-August window, where MLB is currently the sole major team sport
 - PGA Tour — different structure (individual, not team); needs separate scoring model
 - ATP — similar to PGA; separate model needed
 
@@ -245,4 +294,4 @@ The product is successful when:
 
 ---
 
-*Last updated: April 14, 2026*
+*Last updated: August 20, 2026*

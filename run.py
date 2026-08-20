@@ -13,9 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import TOP_N_CANDIDATES
+from config import TOP_N_CANDIDATES, DEFAULT_SPORTS, ALL_SPORTS
 from mlb import fetch_week as fetch_mlb
 from nba import fetch_week as fetch_nba
+from nfl import fetch_week as fetch_nfl
+from ncaaf import fetch_week as fetch_ncaaf
 from enrich import enrich_events
 from score import score_event
 from rank import rank_events
@@ -38,14 +40,86 @@ def week_range(from_date: date) -> tuple[date, date]:
 
 
 # ---------------------------------------------------------------------------
+# Sport registry
+# ---------------------------------------------------------------------------
+
+FETCHERS = {
+    "MLB":   fetch_mlb,
+    "NBA":   fetch_nba,
+    "NFL":   fetch_nfl,
+    "NCAAF": fetch_ncaaf,
+}
+
+
+def parse_sports(raw: str | None) -> list[str]:
+    """
+    Parse --sports into an ordered, validated list of sport keys.
+
+    Accepts a comma-separated list ("mlb,nfl") or "all".
+    """
+    if not raw:
+        return list(DEFAULT_SPORTS)
+
+    if raw.strip().lower() == "all":
+        return list(ALL_SPORTS)
+
+    requested = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    unknown   = [s for s in requested if s not in FETCHERS]
+    if unknown:
+        raise SystemExit(
+            f"Unknown sport(s): {', '.join(unknown)}. "
+            f"Valid: {', '.join(ALL_SPORTS)} (or 'all')."
+        )
+    if not requested:
+        raise SystemExit("--sports was empty. Pass at least one sport.")
+
+    # Preserve the canonical ordering rather than the user's, so output is
+    # stable regardless of how the flag was typed.
+    return [s for s in ALL_SPORTS if s in requested]
+
+
+def fetch_sports(
+    sports: list[str],
+    week_start: date,
+    week_end: date,
+) -> tuple[list, dict]:
+    """
+    Run each sport's fetcher and merge results.
+
+    A failure in one sport must not take down the run — a broken ESPN endpoint
+    should cost us that league for the week, not the whole edition.
+    Context keys are namespaced ("MLB:X" vs "NFL:X"), so merging is safe.
+    """
+    all_events:   list = []
+    all_contexts: dict = {}
+
+    for sport in sports:
+        try:
+            events, contexts = FETCHERS[sport](week_start, week_end)
+        except Exception as e:
+            print(f"  [{sport}] ERROR: fetch failed, skipping this sport: {e}",
+                  file=sys.stderr)
+            continue
+        all_events.extend(events)
+        all_contexts.update(contexts)
+
+    return all_events, all_contexts
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
 def _record(ctx: TeamContext) -> str:
+    if ctx.ties:
+        return f"{ctx.wins}-{ctx.losses}-{ctx.ties}"
     return f"{ctx.wins}-{ctx.losses}"
 
 
 def _l10(ctx: TeamContext) -> str:
+    # Football carries no last-ten — momentum is scored off the streak instead.
+    if ctx.sport in ("NFL", "NCAAF"):
+        return "n/a"
     return f"{ctx.l10_wins}-{ctx.l10_losses}"
 
 
@@ -64,9 +138,12 @@ def _gb(ctx: TeamContext) -> str:
 
 
 def _conf_rank(ctx: TeamContext) -> str:
-    if ctx.sport != "NBA" or ctx.conference_rank is None:
-        return ""
-    return f"#{ctx.conference_rank} {ctx.conference or ''}"
+    """Standing shorthand: conference seed for NBA/NFL, poll rank for NCAAF."""
+    if ctx.sport == "NCAAF":
+        return f"AP #{ctx.ap_rank}" if ctx.ap_rank else "unranked"
+    if ctx.sport in ("NBA", "NFL") and ctx.conference_rank is not None:
+        return f"#{ctx.conference_rank} {ctx.conference or ''}".strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -291,14 +368,15 @@ def print_diagnostics(
 
             # Average stakes comparison
             mlb_events = [se for se in ranked if se.raw.sport == "MLB"]
-            top5_nba   = [se for se in ranked[:cutoff] if se.raw.sport == "NBA"]
+            top5_other = [se for se in ranked[:cutoff] if se.raw.sport != "MLB"]
 
             if mlb_events:
                 avg_mlb_stakes = sum(se.stakes_score for se in mlb_events) / len(mlb_events)
                 print(f"  Avg stakes (all MLB in pool)     : {avg_mlb_stakes:.1f}")
-            if top5_nba:
-                avg_nba_stakes = sum(se.stakes_score for se in top5_nba) / len(top5_nba)
-                print(f"  Avg stakes (top-{cutoff} NBA games)     : {avg_nba_stakes:.1f}")
+            if top5_other:
+                avg_other_stakes = sum(se.stakes_score for se in top5_other) / len(top5_other)
+                other_sports = ", ".join(sorted({se.raw.sport for se in top5_other}))
+                print(f"  Avg stakes (top-{cutoff} {other_sports})  : {avg_other_stakes:.1f}")
             print()
 
             # Top MLB game detail
@@ -335,7 +413,13 @@ def main() -> None:
                              "render HTML — safe for GitHub Actions")
     parser.add_argument("--date",
                         help="Override generation date YYYY-MM-DD (default: today ET)")
+    parser.add_argument("--sports",
+                        help=f"Comma-separated sports to include, or 'all'. "
+                             f"Valid: {', '.join(ALL_SPORTS)}. "
+                             f"Default: {', '.join(DEFAULT_SPORTS)}")
     args = parser.parse_args()
+
+    sports = parse_sports(args.sports)
 
     now = datetime.now(timezone.utc)
 
@@ -348,14 +432,11 @@ def main() -> None:
     week_start, week_end = week_range(gen_date)
 
     print(f"\nFetching data for {week_start} – {week_end}...", file=sys.stderr)
+    print(f"Sports: {', '.join(sports)}", file=sys.stderr)
     print("", file=sys.stderr)
 
     # --- Fetch ---
-    mlb_events, mlb_contexts = fetch_mlb(week_start, week_end)
-    nba_events, nba_contexts = fetch_nba(week_start, week_end)
-
-    all_events   = mlb_events + nba_events
-    all_contexts = {**mlb_contexts, **nba_contexts}   # no key collisions: "MLB:X" vs "NBA:X"
+    all_events, all_contexts = fetch_sports(sports, week_start, week_end)
 
     total_fetched = len(all_events)
     print(f"\nTotal fetched: {total_fetched} events", file=sys.stderr)

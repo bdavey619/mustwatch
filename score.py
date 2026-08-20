@@ -5,13 +5,26 @@ No I/O. All functions take data, return numbers.
 """
 
 from config import (
-    MARQUEE_PLAYERS,
-    SEASON_PHASE_MULTIPLIERS,
-    MLB_TOTAL_GAMES, NBA_TOTAL_GAMES,
-    MLB_RACE_THRESHOLD,
+    MARQUEE_PLAYERS, NCAAF_PROGRAM_PRESTIGE,
+    SEASON_PHASE_MULTIPLIERS, SEASON_PHASE_MULTIPLIERS_BY_SPORT,
+    MIN_GAMES_FOR_RECORD, NEUTRAL_TEAM_QUALITY, NEUTRAL_STAKES_BASE,
+    MLB_TOTAL_GAMES, NBA_TOTAL_GAMES, NFL_TOTAL_GAMES, NCAAF_TOTAL_GAMES,
+    MLB_RACE_THRESHOLD, MLB_WILD_CARD_SPOTS,
     NBA_PLAYOFF_RANK_CUTOFF, NBA_PLAYIN_RANK_CUTOFF,
+    NFL_PLAYOFF_SEED_CUTOFF, NFL_HUNT_SEED_CUTOFF,
+    NCAAF_ELITE_RANK, NCAAF_RANKED_CUTOFF,
 )
-from models import TeamContext, ScoredEvent
+from models import TeamContext, ScoredEvent, RawEvent
+
+# Games in a full season, by sport — drives the season-phase multiplier.
+TOTAL_GAMES = {
+    "MLB":   MLB_TOTAL_GAMES,
+    "NBA":   NBA_TOTAL_GAMES,
+    "NFL":   NFL_TOTAL_GAMES,
+    "NCAAF": NCAAF_TOTAL_GAMES,
+}
+
+FOOTBALL_SPORTS = ("NFL", "NCAAF")
 
 
 # ---------------------------------------------------------------------------
@@ -31,19 +44,103 @@ def team_quality(win_pct: float) -> float:
     return 2.0
 
 
+def nfl_team_quality(win_pct: float) -> float:
+    """
+    NFL quality curve.
+
+    A 17-game season spreads win percentage far wider than a 162- or 82-game
+    one: .650 is a fringe playoff team in baseball and an 11-6 division winner
+    in football. Thresholds are stretched to match, so the top of the scale
+    stays reserved for genuinely dominant teams.
+    """
+    if win_pct >= 0.750: return 10.0
+    if win_pct >= 0.700: return 9.0
+    if win_pct >= 0.650: return 8.0
+    if win_pct >= 0.550: return 7.0
+    if win_pct >= 0.500: return 6.0
+    if win_pct >= 0.450: return 4.0
+    if win_pct >= 0.350: return 3.0
+    return 2.0
+
+
+def ncaaf_team_quality(ctx: TeamContext) -> float:
+    """
+    NCAAF quality from poll position, not record.
+
+    Win percentage is close to meaningless in college football — schedules are
+    not comparable — so the poll does the work. An unranked team falls back to
+    a record-based floor that cannot reach the top of the scale.
+    """
+    rank = ctx.ap_rank
+    if rank is not None:
+        if rank <= 4:  return 10.0
+        if rank <= 10: return 9.0
+        if rank <= 15: return 8.0
+        if rank <= 25: return 7.0
+
+    # Unranked — capped well below any ranked team.
+    if ctx.games_played == 0:
+        return 3.0
+    if ctx.win_pct >= 0.800: return 5.0
+    if ctx.win_pct >= 0.600: return 4.0
+    if ctx.win_pct >= 0.500: return 3.0
+    return 2.0
+
+
+def has_record_signal(ctx: TeamContext) -> bool:
+    """
+    True once a team has played enough games for its record to mean something.
+
+    Before this point a win percentage is noise, and treating it as information
+    makes "nobody has played yet" score identically to "this team is terrible".
+    """
+    return ctx.games_played >= MIN_GAMES_FOR_RECORD.get(ctx.sport, 0)
+
+
+def quality_for(ctx: TeamContext) -> float:
+    """
+    Sport-aware team quality.
+
+    When the record carries no signal yet, return an explicit neutral rather
+    than letting a 0-0 team fall to the bottom of the win-pct curve. College
+    football is exempt because its quality comes from the poll, which exists
+    from the preseason onward and does not need a record to be meaningful.
+    """
+    if ctx.sport == "NCAAF":
+        return ncaaf_team_quality(ctx)
+
+    if not has_record_signal(ctx):
+        return NEUTRAL_TEAM_QUALITY
+
+    if ctx.sport == "NFL":
+        return nfl_team_quality(ctx.win_pct)
+    return team_quality(ctx.win_pct)
+
+
 # ---------------------------------------------------------------------------
 # Season phase multiplier
 # ---------------------------------------------------------------------------
 
-def season_phase_multiplier(games_played: int, total_games: int) -> float:
+def season_phase_multiplier(games_played: int, total_games: int,
+                            sport: str | None = None) -> float:
+    """
+    Discount regular season stakes by how far into the season we are.
+
+    The curve is per-sport: a 40% haircut on the first fifth of a 162-game
+    season is a fair statement about April baseball, and the same haircut on a
+    17-game season would discount Weeks 1–4 of the NFL, which is not.
+    """
     if total_games == 0:
         return 1.0
+
+    table = SEASON_PHASE_MULTIPLIERS_BY_SPORT.get(sport, SEASON_PHASE_MULTIPLIERS)
+
     pct = games_played / total_games
     if pct < 0.20:
-        return SEASON_PHASE_MULTIPLIERS["early"]
+        return table["early"]
     if pct < 0.70:
-        return SEASON_PHASE_MULTIPLIERS["mid"]
-    return SEASON_PHASE_MULTIPLIERS["late"]
+        return table["mid"]
+    return table["late"]
 
 
 # ---------------------------------------------------------------------------
@@ -55,8 +152,15 @@ def score_stakes(
     away: TeamContext,
     is_postseason: bool,
     is_playin: bool = False,
+    event: RawEvent | None = None,
 ) -> tuple[float, str]:
-    """Returns (score, detail_string)."""
+    """
+    Returns (score, detail_string).
+
+    `event` is optional and used only by NCAAF, where postseason games range
+    from a national semifinal to a 6-6 team in an exhibition bowl and the round
+    label is the only thing that separates them.
+    """
     if is_postseason:
         # Prefer the explicit play-in flag (ESPN season.type == 5).
         # Keep seed-range inference as fallback in case the type field is absent.
@@ -70,35 +174,100 @@ def score_stakes(
                     NBA_PLAYOFF_RANK_CUTOFF < away_rank <= NBA_PLAYIN_RANK_CUTOFF):
                 return 25.0, "play-in game (inferred)"
 
+        if home.sport == "NFL":
+            # Every NFL playoff game is single elimination — the season ends
+            # for one team. Nothing in the regular season compares.
+            return 30.0, "playoff elimination game"
+
+        if home.sport == "NCAAF":
+            return _ncaaf_postseason_stakes(event)
+
         return 29.0, "postseason"
+
+    # Before either team has a meaningful record there is no standings signal
+    # to read, so fall back to how much a single game structurally matters in
+    # this sport rather than concluding the game has no stakes.
+    #
+    # The phase multiplier is deliberately NOT applied here: it exists to
+    # discount a standings-derived claim, and there is no such claim to
+    # discount. Applying it would charge the same uncertainty twice — which is
+    # exactly how an NFL opener reached 3.0/30.
+    if _needs_neutral_stakes(home, away):
+        base = NEUTRAL_STAKES_BASE.get(home.sport, 10.0)
+        return base, "standings not yet meaningful"
 
     if home.sport == "MLB":
         base, detail = _mlb_stakes_base(home, away)
-        mult = season_phase_multiplier(
-            max(home.games_played, away.games_played),
-            MLB_TOTAL_GAMES,
-        )
+    elif home.sport == "NFL":
+        base, detail = _nfl_stakes_base(home, away)
+    elif home.sport == "NCAAF":
+        base, detail = _ncaaf_stakes_base(home, away)
     else:
         base, detail = _nba_stakes_base(home, away)
-        mult = season_phase_multiplier(
-            max(home.games_played, away.games_played),
-            NBA_TOTAL_GAMES,
-        )
+
+    mult = season_phase_multiplier(
+        max(home.games_played, away.games_played),
+        TOTAL_GAMES.get(home.sport, MLB_TOTAL_GAMES),
+        home.sport,
+    )
 
     raw    = round(base * mult, 1)
     detail = f"{detail} ×{mult:.2f}"
     return raw, detail
 
 
+def _needs_neutral_stakes(home: TeamContext, away: TeamContext) -> bool:
+    """
+    True when neither records nor standings position can yet say anything.
+
+    College football is excluded: the preseason AP poll gives every ranked team
+    a meaningful position from Week 1, so its stakes model works with zero games
+    played. A poll-less unranked matchup still falls through to its own low
+    baseline, which is the correct answer rather than a data gap.
+    """
+    if home.sport == "NCAAF":
+        return False
+
+    if has_record_signal(home) or has_record_signal(away):
+        return False
+
+    # A published playoff seed is real standings information even with few
+    # games played — if either side has one, use the normal model.
+    if home.conference_rank is not None or away.conference_rank is not None:
+        return False
+
+    # Same for baseball's division/wild card position.
+    if home.sport == "MLB":
+        if any(v is not None for v in (
+            home.games_back, away.games_back,
+            home.wild_card_rank, away.wild_card_rank,
+        )):
+            return False
+
+    return True
+
+
 def _in_mlb_race(ctx: TeamContext) -> bool:
-    """True if team is in a meaningful playoff/division race."""
+    """
+    True if team is in a meaningful playoff/division race.
+
+    Note the asymmetry between the two "games back" fields: `games_back` is
+    None for a division leader (a positive signal), while `wc_games_back` is
+    None both for a team holding a wild card spot AND when the API simply did
+    not supply the field. Because that None is ambiguous, wild card position is
+    read from `wild_card_rank` — a positive signal — rather than inferred from
+    a missing value.
+    """
     # Division leader
     if ctx.games_back is None:
         return True
     # Within 5 of division leader
     if ctx.games_back <= MLB_RACE_THRESHOLD:
         return True
-    # Within 5 of last wild card spot
+    # Currently holds a wild card spot
+    if ctx.wild_card_rank is not None and ctx.wild_card_rank <= MLB_WILD_CARD_SPOTS:
+        return True
+    # Within 5 of the last wild card spot
     if ctx.wc_games_back is not None and ctx.wc_games_back <= MLB_RACE_THRESHOLD:
         return True
     return False
@@ -151,6 +320,103 @@ def _nba_stakes_base(home: TeamContext, away: TeamContext) -> tuple[float, str]:
     return 5.0, "no meaningful stakes"
 
 
+def _nfl_stakes_base(home: TeamContext, away: TeamContext) -> tuple[float, str]:
+    """
+    NFL regular season stakes, driven by conference playoff seed.
+
+    Seeds 1–7 are playoff position; 8–10 are live in the race. Before ESPN
+    publishes a seed (early season) both fall through to 99 and the win-pct
+    tiers decide — which the season-phase multiplier then discounts anyway.
+    """
+    home_seed = home.conference_rank or 99
+    away_seed = away.conference_rank or 99
+
+    home_in = home_seed <= NFL_PLAYOFF_SEED_CUTOFF
+    away_in = away_seed <= NFL_PLAYOFF_SEED_CUTOFF
+    home_hunting = NFL_PLAYOFF_SEED_CUTOFF < home_seed <= NFL_HUNT_SEED_CUTOFF
+    away_hunting = NFL_PLAYOFF_SEED_CUTOFF < away_seed <= NFL_HUNT_SEED_CUTOFF
+
+    if home_in and away_in:
+        avg_wpct = (home.win_pct + away.win_pct) / 2
+        if avg_wpct >= 0.700:
+            return 24.0, "two playoff teams (elite)"
+        return 20.0, "both in playoff position"
+
+    if (home_in and away_hunting) or (away_in and home_hunting):
+        return 17.0, "playoff position vs. team in the hunt"
+
+    if home_hunting and away_hunting:
+        return 16.0, "both fighting for the last spots"
+
+    if home_in or away_in:
+        return 14.0, "one team in playoff position"
+
+    if home_hunting or away_hunting:
+        return 12.0, "one team in the hunt"
+
+    avg_wpct = (home.win_pct + away.win_pct) / 2
+    if avg_wpct >= 0.520:
+        return 10.0, "both above .500"
+    return 5.0, "no meaningful stakes"
+
+
+def _ncaaf_stakes_base(home: TeamContext, away: TeamContext) -> tuple[float, str]:
+    """
+    NCAAF regular season stakes, driven by poll position.
+
+    One loss can end a national title case, so a top-10 matchup carries stakes
+    closer to a pro playoff game than to a regular season one.
+    """
+    home_rank = home.ap_rank
+    away_rank = away.ap_rank
+
+    home_ranked = home_rank is not None and home_rank <= NCAAF_RANKED_CUTOFF
+    away_ranked = away_rank is not None and away_rank <= NCAAF_RANKED_CUTOFF
+    home_elite  = home_rank is not None and home_rank <= NCAAF_ELITE_RANK
+    away_elite  = away_rank is not None and away_rank <= NCAAF_ELITE_RANK
+
+    if home_elite and away_elite:
+        return 26.0, f"top-10 matchup (#{home_rank} vs #{away_rank})"
+
+    if (home_elite and away_ranked) or (away_elite and home_ranked):
+        return 22.0, f"top-10 vs ranked (#{home_rank} vs #{away_rank})"
+
+    if home_ranked and away_ranked:
+        return 19.0, f"ranked matchup (#{home_rank} vs #{away_rank})"
+
+    if home_elite or away_elite:
+        top = home_rank if home_elite else away_rank
+        return 13.0, f"one top-10 team (#{top})"
+
+    if home_ranked or away_ranked:
+        top = home_rank if home_ranked else away_rank
+        return 10.0, f"one ranked team (#{top})"
+
+    avg_wpct = (home.win_pct + away.win_pct) / 2
+    if avg_wpct >= 0.600:
+        return 7.0, "both winning, neither ranked"
+    return 4.0, "no meaningful stakes"
+
+
+def _ncaaf_postseason_stakes(event: RawEvent | None) -> tuple[float, str]:
+    """
+    Separate the national title bracket from the exhibition bowls.
+
+    Most of the ~40 bowl games are opt-out-riddled exhibitions between 6-6
+    teams. Scoring them all as "postseason" would flood every late-December
+    list with games nobody planned an evening around.
+    """
+    note = (event.event_note or "").lower() if event and event.event_note else ""
+
+    if "national championship" in note:
+        return 30.0, "national championship"
+    if "playoff" in note or "semifinal" in note or "quarterfinal" in note:
+        return 29.0, "College Football Playoff"
+    if note:
+        return 15.0, f"bowl game ({event.event_note})"
+    return 15.0, "bowl game"
+
+
 # ---------------------------------------------------------------------------
 # Competitive balance (0–20)
 # ---------------------------------------------------------------------------
@@ -160,8 +426,8 @@ def score_competitive_balance(home: TeamContext, away: TeamContext) -> float:
     min(team1_quality, team2_quality) × 2.
     One weak team tanks the score regardless of how strong the opponent is.
     """
-    q_home = team_quality(home.win_pct)
-    q_away = team_quality(away.win_pct)
+    q_home = quality_for(home)
+    q_away = quality_for(away)
     return round(min(q_home, q_away) * 2, 1)
 
 
@@ -173,7 +439,14 @@ def score_momentum(home: TeamContext, away: TeamContext) -> float:
     """
     L10 quality for each team (0–6 pts each) + streak bonus (0–3).
     Max: 15.
+
+    Football has no usable last-ten window — ten games is most of an NFL season
+    and nearly all of a college one — so it uses a streak-based model on the
+    same 0–15 scale.
     """
+    if home.sport in FOOTBALL_SPORTS or away.sport in FOOTBALL_SPORTS:
+        return _football_momentum(home, away)
+
     def _l10_score(ctx: TeamContext) -> float:
         total = ctx.l10_wins + ctx.l10_losses
         if total == 0:
@@ -198,12 +471,55 @@ def score_momentum(home: TeamContext, away: TeamContext) -> float:
     return round(min(base + streak_bonus, 15.0), 1)
 
 
+def _football_momentum(home: TeamContext, away: TeamContext) -> float:
+    """
+    Streak-based momentum for football (0–15), same scale as the L10 model.
+
+    A three-game win streak in a 17-game season is the equivalent of a long hot
+    stretch in baseball. The bonus fires for a 5+ game run, or for an
+    undefeated team once the sample is real.
+    """
+    def _streak_score(ctx: TeamContext) -> float:
+        n = ctx.streak_n
+        if ctx.streak_type == "W":
+            if n >= 5: return 6.0
+            if n == 4: return 5.5
+            if n == 3: return 5.0
+            if n == 2: return 4.0
+            if n == 1: return 3.5
+            return 3.0          # no streak recorded — neutral
+        # Losing streak
+        if n >= 4: return 1.0
+        if n == 3: return 1.5
+        if n == 2: return 2.0
+        if n == 1: return 2.5
+        return 3.0
+
+    base = _streak_score(home) + _streak_score(away)   # 2–12
+
+    bonus = 0.0
+    for ctx in (home, away):
+        on_long_run = ctx.streak_type == "W" and ctx.streak_n >= 5
+        undefeated  = ctx.losses == 0 and ctx.games_played >= 5
+        if on_long_run or undefeated:
+            bonus = 3.0
+            break
+
+    return round(min(base + bonus, 15.0), 1)
+
+
 # ---------------------------------------------------------------------------
 # Star power (0–15)
 # ---------------------------------------------------------------------------
 
 def score_star_power(home: TeamContext, away: TeamContext) -> tuple[float, str]:
     """Returns (score, detail_string)."""
+    # College football deliberately has no marquee player list. Rosters turn
+    # over every year and keeping ~136 programs current is unmaintainable — in
+    # college the *program* is the draw. See DECISIONS.md 2026-08-20.
+    if home.sport == "NCAAF":
+        return _ncaaf_star_power(home, away)
+
     home_key = f"{home.sport}:{home.abbr}"
     away_key = f"{away.sport}:{away.abbr}"
 
@@ -247,6 +563,36 @@ def score_star_power(home: TeamContext, away: TeamContext) -> tuple[float, str]:
     return score, detail
 
 
+def _ncaaf_star_power(home: TeamContext, away: TeamContext) -> tuple[float, str]:
+    """
+    Program prestige stands in for individual star power in college football.
+
+    Deliberately independent of poll position: rank already drives stakes and
+    competitive balance, and reusing it here would count one signal three times
+    and systematically float ranked college games above comparable NFL games.
+    Tiers mirror the superstar/star structure of the pro model.
+    """
+    h_tier = NCAAF_PROGRAM_PRESTIGE.get(f"NCAAF:{home.abbr}")
+    a_tier = NCAAF_PROGRAM_PRESTIGE.get(f"NCAAF:{away.abbr}")
+
+    h_blue  = h_tier == "blueblood"
+    a_blue  = a_tier == "blueblood"
+    h_named = h_tier is not None
+    a_named = a_tier is not None
+
+    if h_blue and a_blue:
+        return 15.0, f"{home.name} vs {away.name} (blue bloods)"
+    if (h_blue and a_named) or (a_blue and h_named):
+        return 12.0, f"{home.name} vs {away.name}"
+    if h_named and a_named:
+        return 10.0, f"{home.name} vs {away.name}"
+    if h_named:
+        return 6.0, f"{home.name} (one side)"
+    if a_named:
+        return 6.0, f"{away.name} (one side)"
+    return 3.0, "no marquee programs"
+
+
 # ---------------------------------------------------------------------------
 # Narrative flags (0–20)
 # ---------------------------------------------------------------------------
@@ -254,24 +600,31 @@ def score_star_power(home: TeamContext, away: TeamContext) -> tuple[float, str]:
 def score_narrative_flags(flags: list[str]) -> float:
     """
     Tier 1: elimination_game = 20, no stacking.
-    Tier 2: rivalry=8, playoff_rematch=6, first_place_clash=5, ace_duel=6,
-            marquee_starter=3, superstar_matchup=4, momentum_mismatch=4,
-            seed_pressure=3. Capped at 12.
+    Tier 2: rivalry=8, undefeated_showdown=7, playoff_rematch=6, ace_duel=6,
+            division_clash=6, first_place_clash=5, season_opener=5,
+            superstar_matchup=4, momentum_mismatch=4, conference_clash=4,
+            marquee_starter=3, seed_pressure=3. Capped at 12.
     marquee_starter only fires when ace_duel is absent (enforced in enrich.py).
     NBA-only: superstar_matchup, momentum_mismatch, seed_pressure.
+    NFL-only: division_clash.  NCAAF-only: conference_clash.
+    NFL + NCAAF: undefeated_showdown, season_opener.
     """
     if "elimination_game" in flags:
         return 20.0
 
     tier2 = 0.0
-    if "rivalry"            in flags: tier2 += 8.0
-    if "playoff_rematch"    in flags: tier2 += 6.0
-    if "first_place_clash"  in flags: tier2 += 5.0
-    if "ace_duel"           in flags: tier2 += 6.0
-    if "marquee_starter"    in flags: tier2 += 3.0
-    if "superstar_matchup"  in flags: tier2 += 4.0
-    if "momentum_mismatch"  in flags: tier2 += 4.0
-    if "seed_pressure"      in flags: tier2 += 3.0
+    if "rivalry"             in flags: tier2 += 8.0
+    if "season_opener"       in flags: tier2 += 5.0
+    if "undefeated_showdown" in flags: tier2 += 7.0
+    if "playoff_rematch"     in flags: tier2 += 6.0
+    if "ace_duel"            in flags: tier2 += 6.0
+    if "division_clash"      in flags: tier2 += 6.0
+    if "first_place_clash"   in flags: tier2 += 5.0
+    if "superstar_matchup"   in flags: tier2 += 4.0
+    if "momentum_mismatch"   in flags: tier2 += 4.0
+    if "conference_clash"    in flags: tier2 += 4.0
+    if "marquee_starter"     in flags: tier2 += 3.0
+    if "seed_pressure"       in flags: tier2 += 3.0
 
     return min(tier2, 12.0)
 
@@ -287,7 +640,8 @@ def score_event(se: ScoredEvent) -> ScoredEvent:
     home = se.home_ctx
     away = se.away_ctx
 
-    stakes, stakes_detail        = score_stakes(home, away, se.raw.is_postseason, se.raw.is_playin)
+    stakes, stakes_detail        = score_stakes(home, away, se.raw.is_postseason,
+                                                se.raw.is_playin, se.raw)
     comp_balance                  = score_competitive_balance(home, away)
     momentum                      = score_momentum(home, away)
     star_power, star_power_detail = score_star_power(home, away)
