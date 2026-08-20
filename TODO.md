@@ -21,20 +21,15 @@ every schema assumption is unverified.
 
 ---
 
-## BUG — MLB wild card leaders score as "not in the race"
+## DONE — MLB wild card race bug (fixed 2026-08-20)
 
-Found while adding football; **pre-existing and unrelated**, left unfixed so the
-football work would not silently change published MLB rankings.
+`score._in_mlb_race` read wild card position from `wc_games_back is None`, which
+means both "holds a wild card spot" and "no data". Race membership now keys off
+`wild_card_rank`. Separately, `mlb.py` defaulted a missing `wildCardRank` to 0,
+which reads as better than first place; it now parses to None.
 
-`score._in_mlb_race` treats `wc_games_back is None` as "no wild card data", but
-`models.py` documents `None` as "holds a wild card spot" (the MLB API returns
-`"-"` for teams in position). A team leading the wild card while more than 5
-games back in its division therefore reads as out of the race, dropping stakes
-from 22 to 15.
-
-- [ ] Confirm the MLB API's `"-"` semantics for `wildCardGamesBack`
-- [ ] Fix `_in_mlb_race` to treat a held wild card spot as being in the race
-- [ ] Re-score the last few weeks and check how much the top 5 moves before merging
+- [ ] Confirm against live standings that wild card holders are picked up — `python validate_sources.py --sports mlb` exercises exactly this case
+- [ ] Compare a re-scored week against the last published edition to see how much the top 5 actually moves
 
 ---
 

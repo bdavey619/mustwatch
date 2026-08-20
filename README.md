@@ -156,6 +156,16 @@ All four fetchers return the same `(list[RawEvent], dict[str, TeamContext])` sha
 
 **Sport selection.** `run.py --sports mlb,nba,nfl` (or `--sports all`) controls which leagues are ingested. Default is `mlb,nba,nfl`; NCAAF is opt-in. The scheduled workflow is pinned to `mlb,nba` until NFL has been validated against a live response.
 
+**Validating a source before enabling it.** `test_football.py` proves the parsing logic against fixtures; it cannot prove the live payload has the shape those fixtures assume. `validate_sources.py` closes that gap — it calls the real endpoints and checks every assumption the fetchers make, reporting PASS/FAIL/WARN per item and exiting non-zero on any failure:
+
+```
+python validate_sources.py                     # all sports
+python validate_sources.py --sports nfl        # one sport
+python validate_sources.py --date 2026-11-07   # probe a specific week
+```
+
+Run it in-season — several checks (poll population, FBS slate size, college abbreviation coverage) are only meaningful when games are scheduled. Do not enable a sport in the workflow while it reports a FAIL.
+
 **Where football differs from the pro basketball/baseball model:**
 
 | Concern | Handling |
@@ -196,7 +206,8 @@ explain.py      # LLM explanation generation
 render.py       # HTML/email rendering
 run.py          # Entrypoint — orchestrates full pipeline
 index.html      # Published page — served at bdavey.co/mustwatch/
-test_football.py # Offline tests for the NFL/NCAAF additions (no network)
+test_football.py # Offline tests — parsing + scoring logic (no network)
+validate_sources.py # Live schema validation — run before enabling a sport
 templates/
   weekly.html   # {{key}} template
 ```

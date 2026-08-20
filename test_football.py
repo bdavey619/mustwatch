@@ -1,9 +1,14 @@
 """
-test_football.py — Offline tests for the NFL and NCAAF additions.
+test_football.py — Offline tests for the multi-sport scoring engine.
 
 No network. Fixtures are hand-built ESPN-shaped payloads, so these verify the
-normalizers, the football scoring models, and — importantly — that MLB and NBA
-scoring is completely unchanged by the additions.
+normalizers, the football scoring models, the MLB wild card race logic, and —
+importantly — that MLB and NBA scoring is not disturbed by the football work.
+
+These prove the parsing *logic*. They cannot prove that live payloads have the
+shape the fixtures assume — that is what validate_sources.py is for, and it
+must be run against the real endpoints before enabling a sport in the
+scheduled workflow.
 
 Run: python test_football.py
 """
@@ -96,16 +101,9 @@ def test_mlb_nba_unchanged():
     )
     se = scored(event("MLB", "LAD", "SD"), mlb_home, mlb_away)
 
-    # LAD/SD is a configured rivalry; late season (150/162).
-    #
-    # NOTE: stakes land on "one team in race" (15.0), not "both in race" (22.0),
-    # because score._in_mlb_race treats wc_games_back=None as "no wild card
-    # data" when models.py defines it as "holds a wild card spot". A team
-    # leading the wild card while >5 GB in its division therefore reads as out
-    # of the race. That is a pre-existing bug, unrelated to the football work,
-    # and this test pins current behavior rather than changing MLB output as a
-    # side effect. See TODO.md.
-    check("MLB stakes",   se.stakes_score, 15.0)
+    # LAD/SD is a configured rivalry; late season (150/162). SD holds the #1
+    # wild card, so both teams are in the race → 22.0.
+    check("MLB stakes",   se.stakes_score, 22.0)
     check("MLB balance",  se.competitive_balance_score, 16.0)
     check("MLB momentum", se.momentum_score, 9.0)
     check("MLB star",     se.star_power_score, 15.0)
@@ -131,6 +129,57 @@ def test_mlb_nba_unchanged():
     check_true("NBA rivalry flag", "rivalry" in se2.flags)
     # first_place_clash (both top 2) should also be present
     check_true("NBA first_place_clash", "first_place_clash" in se2.flags)
+
+
+def test_mlb_wild_card_race():
+    """
+    A team holding a wild card spot is in the race, even when it is far back
+    in its own division.
+
+    wc_games_back=None is ambiguous — it means both "holds a wild card spot"
+    and "the API sent no wild card data" — so race membership is read from
+    wild_card_rank instead.
+    """
+    def team(abbr, w, l, gb, wc_rank, wc_gb):
+        return TeamContext(
+            abbr=abbr, name=abbr, sport="MLB", wins=w, losses=l, win_pct=w / (w + l),
+            l10_wins=5, l10_losses=5, streak_type="W", streak_n=1, games_played=w + l,
+            games_back=gb, wild_card_rank=wc_rank, wc_games_back=wc_gb,
+        )
+
+    # Holds the top wild card while 7 games back in the division
+    wc_leader = team("SD", 88, 62, 7.0, 1, None)
+    check_true("wild card holder is in the race", score._in_mlb_race(wc_leader))
+
+    # Third and last wild card spot
+    check_true("last wild card spot counts",
+               score._in_mlb_race(team("NYM", 84, 66, 9.0, 3, None)))
+
+    # Just outside the cutoff but within striking distance
+    check_true("close chaser is in the race",
+               score._in_mlb_race(team("SF", 80, 70, 12.0, 4, 3.0)))
+
+    # Out of it entirely, and no wild card data at all
+    check_true("far-back team with no WC data is not in the race",
+               not score._in_mlb_race(team("COL", 50, 100, 30.0, None, None)))
+
+    # Division leader is always in
+    check_true("division leader is in the race",
+               score._in_mlb_race(team("LAD", 95, 55, None, None, None)))
+
+    # A wild card rank beyond the berths is not, by itself, enough
+    check_true("rank 8 alone does not qualify",
+               not score._in_mlb_race(team("WSH", 68, 82, 20.0, 8, 14.0)))
+
+
+def test_mlb_rank_parsing():
+    """A missing rank must be None, never 0 — 0 would read as first place."""
+    import mlb
+    check("missing rank → None", mlb._parse_rank(None), None)
+    check("dash rank → None",    mlb._parse_rank("-"), None)
+    check("zero rank → None",    mlb._parse_rank(0), None)
+    check("numeric string",      mlb._parse_rank("3"), 3)
+    check("int rank",            mlb._parse_rank(1), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +439,50 @@ def test_nfl_normalizer():
     check("NFL pro bowl dropped",  nfl._normalize_event(_espn_nfl_event(season_type=4)), None)
     # TBD playoff placeholder dropped
     check("NFL TBD dropped", nfl._normalize_event(_espn_nfl_event(season_type=3, tbd=True)), None)
+
+
+def test_nfl_stat_fallback():
+    """A stat carried only as displayValue must still parse, not read as 0."""
+    stats = {
+        "wins":        {"displayValue": "11"},
+        "losses":      {"value": 6},
+        "playoffSeed": {"displayValue": "3"},
+    }
+    check("value preferred",        nfl._stat_val(stats, "losses", 0), 6)
+    check("displayValue fallback",  nfl._stat_val(stats, "wins", 0), 11)
+    check("seed via displayValue",  nfl._stat_val(stats, "playoffSeed", None), 3)
+    check("missing stat default",   nfl._stat_val(stats, "ties", 0), 0)
+    check("unparseable default",    nfl._stat_val({"x": {"displayValue": "-"}}, "x", 0), 0)
+
+    # Full context built from a displayValue-only payload
+    entry = {
+        "team": {"abbreviation": "DET", "displayName": "Detroit Lions"},
+        "stats": [
+            {"name": "wins",        "displayValue": "12"},
+            {"name": "losses",      "displayValue": "4"},
+            {"name": "ties",        "displayValue": "1"},
+            {"name": "playoffSeed", "displayValue": "1"},
+            {"name": "streak",      "displayValue": "W5"},
+        ],
+    }
+    ctx = nfl._entry_to_context(entry, "NFC", "NFC North")
+    check("displayValue-only record", (ctx.wins, ctx.losses, ctx.ties), (12, 4, 1))
+    check("displayValue-only gp", ctx.games_played, 17)
+    check("displayValue-only seed", ctx.conference_rank, 1)
+
+
+def test_ncaaf_conference_id_is_str():
+    comp = {
+        "team": {"abbreviation": "UGA", "displayName": "Georgia", "conferenceId": 8},
+        "curatedRank": {"current": 1},
+        "records": [{"type": "total", "summary": "10-0"}],
+    }
+    ctx = ncaaf._competitor_to_context(comp, {})
+    check("conferenceId stored as str", ctx.division, "8")
+
+    comp2 = dict(comp, team={"abbreviation": "UGA", "displayName": "Georgia"})
+    ctx2 = ncaaf._competitor_to_context(comp2, {})
+    check("missing conferenceId → None", ctx2.division, None)
 
 
 def test_nfl_abbr_normalization():

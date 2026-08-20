@@ -157,3 +157,29 @@ Second, and more important: an earlier draft derived college star power from pol
 **Decision:** The GitHub Actions workflow runs `--sports mlb,nba`. NFL and NCAAF are enabled only after a manual run confirms live payloads parse.
 
 **Rationale:** The NFL and NCAAF fetchers were written against ESPN's documented-by-convention response shapes but could not be validated — the build environment's egress policy blocks `site.api.espn.com` entirely, so no live payload was ever fetched. Unit tests cover the normalizers and scoring against hand-built fixtures, which proves the logic but not the schema assumptions. Shipping unvalidated ingestion straight into the published Monday page would put the editorial gate at risk for no benefit; flipping one flag after a successful dry run costs nothing.
+
+---
+
+## 2026-08-20 — Wild card position read from rank, not from a missing value
+
+**Decision:** `score._in_mlb_race` determines wild card standing from `wild_card_rank`, not from `wc_games_back is None`. `mlb.py` parses absent ranks to `None` rather than `0`.
+
+**Rationale:** A bug surfaced while adding football. `models.py` documents `wc_games_back = None` as "holds a wild card spot" — the MLB API returns `"-"` for teams in position — but `_in_mlb_race` read that same `None` as "no wild card data" and returned False. A team leading the wild card while more than 5 games back in its division therefore scored as out of the race entirely, dropping stakes from 22 to 15.
+
+The fix does not simply invert the check, because that `None` is genuinely ambiguous: it also appears when the API omits the field. Reading `wild_card_rank` instead uses a positive signal, so a missing payload still degrades to "not in the race" rather than sweeping every team in.
+
+The parsing half mattered too: `int(tr.get("wildCardRank", 0))` turned a missing rank into 0, which compares as better than first place. Any logic keying off rank would have silently treated every unranked team as a wild card leader.
+
+**Impact:** This changes published MLB rankings — teams holding a wild card berth now score 22 stakes rather than 15 where they previously fell through. That is the correct behavior, but it is a real output change and worth diffing against a recent edition before the next publish.
+
+---
+
+## 2026-08-20 — Live schema validation is a script, not a manual checklist
+
+**Decision:** Add `validate_sources.py`, which calls the real endpoints and asserts every assumption the fetchers make, rather than keeping those assumptions as prose checkboxes in TODO.md.
+
+**Rationale:** The NFL and NCAAF fetchers shipped unvalidated because the build environment blocked `site.api.espn.com`. The gap between "unit tests pass" and "this works against ESPN" is entirely schema assumptions, and a list of things to eyeball by hand is not a durable way to check thirty of them.
+
+The failure mode that motivated this is silence, not errors. A wrong college abbreviation in `NCAAF_RIVALRIES` does not raise — the rivalry simply never fires. A stat that arrives as `displayValue` instead of `value` does not raise — every team reads 0-0. A missing `playoffSeed` does not raise — the stakes model quietly falls back to win-pct tiers. The script checks precisely these, and the same run doubles as a regression check on the MLB wild card fix.
+
+It is also the reason the workflow stays pinned: enabling a sport is now gated on a command that either passes or does not, rather than on judgment about whether the code looks right.

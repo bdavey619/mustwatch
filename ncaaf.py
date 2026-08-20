@@ -267,7 +267,9 @@ def _competitor_to_context(competitor: dict, ap_ranks: dict[str, int]) -> TeamCo
         streak_n=streak_n,
         games_played=gp,
         ap_rank=ap_rank,
-        division=team.get("conferenceId"),
+        # ESPN exposes only a numeric conference id here, not a name. Kept as a
+        # string for traceability; nothing scores off it.
+        division=str(team["conferenceId"]) if team.get("conferenceId") else None,
     )
 
 

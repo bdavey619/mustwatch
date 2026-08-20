@@ -8,7 +8,7 @@ from config import (
     MARQUEE_PLAYERS, NCAAF_PROGRAM_PRESTIGE,
     SEASON_PHASE_MULTIPLIERS,
     MLB_TOTAL_GAMES, NBA_TOTAL_GAMES, NFL_TOTAL_GAMES, NCAAF_TOTAL_GAMES,
-    MLB_RACE_THRESHOLD,
+    MLB_RACE_THRESHOLD, MLB_WILD_CARD_SPOTS,
     NBA_PLAYOFF_RANK_CUTOFF, NBA_PLAYIN_RANK_CUTOFF,
     NFL_PLAYOFF_SEED_CUTOFF, NFL_HUNT_SEED_CUTOFF,
     NCAAF_ELITE_RANK, NCAAF_RANKED_CUTOFF,
@@ -171,14 +171,26 @@ def score_stakes(
 
 
 def _in_mlb_race(ctx: TeamContext) -> bool:
-    """True if team is in a meaningful playoff/division race."""
+    """
+    True if team is in a meaningful playoff/division race.
+
+    Note the asymmetry between the two "games back" fields: `games_back` is
+    None for a division leader (a positive signal), while `wc_games_back` is
+    None both for a team holding a wild card spot AND when the API simply did
+    not supply the field. Because that None is ambiguous, wild card position is
+    read from `wild_card_rank` — a positive signal — rather than inferred from
+    a missing value.
+    """
     # Division leader
     if ctx.games_back is None:
         return True
     # Within 5 of division leader
     if ctx.games_back <= MLB_RACE_THRESHOLD:
         return True
-    # Within 5 of last wild card spot
+    # Currently holds a wild card spot
+    if ctx.wild_card_rank is not None and ctx.wild_card_rank <= MLB_WILD_CARD_SPOTS:
+        return True
+    # Within 5 of the last wild card spot
     if ctx.wc_games_back is not None and ctx.wc_games_back <= MLB_RACE_THRESHOLD:
         return True
     return False

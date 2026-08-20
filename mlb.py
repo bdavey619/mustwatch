@@ -102,6 +102,21 @@ def _normalize_game(g: dict) -> RawEvent | None:
         return None
 
 
+def _parse_rank(raw) -> int | None:
+    """
+    Parse a standings rank into a positive int, or None when absent.
+
+    The MLB API returns "-" for teams the rank does not apply to (a division
+    leader has no wild card rank) and omits the key outright in some payloads.
+    Both mean "no rank", which is not the same as rank 0.
+    """
+    try:
+        rank = int(raw)
+    except (ValueError, TypeError):
+        return None
+    return rank if rank > 0 else None
+
+
 def _fetch_standings() -> dict[str, TeamContext]:
     """Returns contexts keyed by "MLB:{abbr}"."""
     data = _get(
@@ -155,17 +170,11 @@ def _fetch_standings() -> dict[str, TeamContext]:
             except (ValueError, TypeError):
                 wc_games_back = None
 
-            div_rank = None
-            try:
-                div_rank = int(tr.get("divisionRank", 0))
-            except (ValueError, TypeError):
-                pass
-
-            wc_rank = None
-            try:
-                wc_rank = int(tr.get("wildCardRank", 0))
-            except (ValueError, TypeError):
-                pass
+            # Ranks: the API omits these for some teams and returns "-" for
+            # others. Both must land on None — defaulting a missing rank to 0
+            # would read as "better than first place" downstream.
+            div_rank = _parse_rank(tr.get("divisionRank"))
+            wc_rank  = _parse_rank(tr.get("wildCardRank"))
 
             ctx = TeamContext(
                 abbr=abbr,

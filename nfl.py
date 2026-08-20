@@ -282,11 +282,29 @@ def _entry_to_context(entry: dict, conference: str | None, division: str | None)
 # ---------------------------------------------------------------------------
 
 def _stat_val(stats: dict, name: str, default):
+    """
+    Read a numeric stat, preferring `value` but falling back to `displayValue`.
+
+    ESPN populates one or the other depending on the endpoint and the stat. If
+    only `displayValue` is set and we ignored it, wins/losses would silently
+    read as 0 and every team would look 0-0 — a failure that produces plausible
+    output rather than an error, so it is worth the extra branch.
+    """
     s = stats.get(name)
     if s is None:
         return default
+
     v = s.get("value")
-    return v if v is not None else default
+    if v is not None:
+        return v
+
+    dv = s.get("displayValue")
+    if dv is None:
+        return default
+    try:
+        return float(dv) if "." in str(dv) else int(dv)
+    except (ValueError, TypeError):
+        return default
 
 
 def _stat_display(stats: dict, name: str, default: str) -> str:

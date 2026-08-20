@@ -535,6 +535,7 @@ NCAAF_TOTAL_GAMES = 12
 
 # Playoff race thresholds (games back from cutoff)
 MLB_RACE_THRESHOLD     = 5.0   # games back from wild card spot or division lead
+MLB_WILD_CARD_SPOTS    = 3     # wild card berths per league (3 since 2022)
 NBA_PLAYOFF_RANK_CUTOFF = 6    # top 6 → direct playoff berth
 NBA_PLAYIN_RANK_CUTOFF  = 10   # 7–10 → play-in tournament
 
