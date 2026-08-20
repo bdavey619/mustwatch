@@ -20,6 +20,14 @@ flag degraded-but-survivable conditions (a missing optional field, an
 out-of-season endpoint) rather than broken assumptions.
 
 Run this before enabling a sport in .github/workflows/generate.yml.
+
+Several checks are only meaningful in season — poll population, FBS slate size,
+college abbreviation coverage and playoffSeed all read empty before games are
+played. A clean run in the offseason proves the endpoints are reachable and
+parse, not that the data is usable.
+
+Note also that passing here is necessary but not sufficient: see the season
+opener BLOCKER in TODO.md, which is a scoring problem rather than a schema one.
 """
 
 import argparse

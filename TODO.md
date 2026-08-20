@@ -21,6 +21,42 @@ every schema assumption is unverified.
 
 ---
 
+## BLOCKER — Football season openers score near zero
+
+Before NFL is enabled in the workflow. Measured, not theoretical:
+
+    NFL Week 1, Mahomes vs Allen, 0-0 records, no seeds published
+      stakes      3.0 / 30   ("no meaningful stakes" x0.60)
+      balance     4.0 / 20   (win_pct 0.0 -> quality 2.0)
+      momentum    6.0 / 15
+      star       15.0 / 15
+      narrative   8.0 / 20
+      TOTAL      36.0 / 100
+
+    Same matchup Week 12:            74.4 / 100
+    Routine September MLB game:      70.0 / 100
+
+Opening weekend is one of the highest-attention windows in American sport and
+the engine ranks it below a midweek baseball game. The model reads *absence of
+record data* as *evidence of a bad matchup* — three independent components all
+bottom out at once because nobody has played yet.
+
+Affects NCAAF less (the preseason AP poll gives `ap_rank` from Week 1, so
+stakes survive) but the x0.60 multiplier still discounts college Week 1
+neutral-site top-10 kickoff games.
+
+Not football-specific in principle — MLB and NBA opening weeks have the same
+shape. It is only visible in football because 3 games of 17 is a fifth of the
+season, where 3 of 162 is noise.
+
+- [ ] Decide what an opener *should* score — this is a product judgment, not just a code fix
+- [ ] Stop scoring missing data as bad data: when `games_played` is below a threshold, hold record-derived components at neutral rather than at their floor
+- [ ] Reconsider the x0.60 early multiplier for short seasons — for a 17-game season it covers Weeks 1-4, and Week 1 is not a low-stakes event
+- [ ] Consider a preseason prior (prior-year finish, or preseason poll/odds) to seed team quality until real records exist
+- [ ] Re-check with `--date` set to opening week once the season starts
+
+---
+
 ## DONE — MLB wild card race bug (fixed 2026-08-20)
 
 `score._in_mlb_race` read wild card position from `wc_games_back is None`, which
