@@ -79,6 +79,12 @@ def event(sport, home, away, postseason=False, note=None, conf_game=False) -> Ra
     )
 
 
+def event_wk(sport, home, away, week, **kw) -> RawEvent:
+    """Event fixture carrying a week number (football opener detection)."""
+    base = event(sport, home, away, **kw)
+    return RawEvent(**{**base.__dict__, "week": week})
+
+
 def scored(ev, home_ctx, away_ctx) -> ScoredEvent:
     se = enrich.build_scored_event(ev, home_ctx, away_ctx, date(2026, 11, 1))
     return score.score_event(se)
@@ -208,12 +214,15 @@ def test_nfl_stakes():
 
 
 def test_nfl_season_phase():
-    # Week 2 of 17 → early phase (×0.60)
+    # Week 3 of 17 → early phase. Seeds are published, so the normal standings
+    # model applies; only the multiplier is in question here.
     home = nfl_team("KC", 2, 0, seed=1, conf="AFC", div="AFC West")
     away = nfl_team("BUF", 2, 0, seed=2, conf="AFC", div="AFC East")
     s, detail = score.score_stakes(home, away, is_postseason=False)
-    check("NFL early-season multiplier applied", s, round(24.0 * 0.60, 1))
-    check_true("NFL early detail shows multiplier", "×0.60" in detail)
+    # 0.90, not the 0.60 used for baseball: a 17-game season has no games that
+    # are 40% less consequential than the rest.
+    check("NFL early-season multiplier applied", s, round(24.0 * 0.90, 1))
+    check_true("NFL early detail shows multiplier", "×0.90" in detail)
 
 
 def test_nfl_ties():
@@ -297,14 +306,14 @@ def test_ncaaf_stakes():
     a = ncaaf_team("UGA", 8, 0, ap_rank=1)
     b = ncaaf_team("ALA", 7, 1, ap_rank=6)
     s, detail = score.score_stakes(a, b, is_postseason=False)
-    # 8 of 12 games → mid phase (0.667) → ×0.85
-    check("NCAAF top-10 stakes", s, round(26.0 * 0.85, 1))
+    # 8 of 12 games → mid phase (0.667) → ×0.95 on the football curve
+    check("NCAAF top-10 stakes", s, round(26.0 * 0.95, 1))
     check_true("NCAAF stakes names ranks", "#1" in detail and "#6" in detail)
 
     unranked_a = ncaaf_team("VAN", 3, 5)
     unranked_b = ncaaf_team("PUR", 2, 6)
     s2, _ = score.score_stakes(unranked_a, unranked_b, is_postseason=False)
-    check("NCAAF unranked stakes", s2, round(4.0 * 0.85, 1))
+    check("NCAAF unranked stakes", s2, round(4.0 * 0.95, 1))
 
 
 def test_ncaaf_bowls_vs_playoff():
@@ -396,6 +405,139 @@ def test_ncaaf_rank_not_triple_counted():
         "unbranded college top-10 does not outrank NFL playoff rivalry",
         se_nfl.total_score > se_college.total_score,
     )
+
+
+# ---------------------------------------------------------------------------
+# Season openers — absence of record data must not score as bad data
+# ---------------------------------------------------------------------------
+
+def test_has_record_signal():
+    check_true("NFL 0 games: no signal",  not score.has_record_signal(nfl_team("KC", 0, 0)))
+    check_true("NFL 3 games: no signal",  not score.has_record_signal(nfl_team("KC", 2, 1)))
+    check_true("NFL 4 games: signal",     score.has_record_signal(nfl_team("KC", 3, 1)))
+
+    mlb_early = TeamContext(abbr="LAD", name="LAD", sport="MLB", wins=9, losses=3,
+                            win_pct=0.75, l10_wins=7, l10_losses=3, streak_type="W",
+                            streak_n=2, games_played=12)
+    check_true("MLB 12 games: no signal", not score.has_record_signal(mlb_early))
+
+
+def test_neutral_quality_before_sample():
+    """A 0-0 team must read as unknown, not as a .000 team."""
+    fresh = nfl_team("KC", 0, 0)
+    check("0-0 NFL quality is neutral", score.quality_for(fresh), 6.0)
+    check("0-0 balance is neutral", score.score_competitive_balance(fresh, nfl_team("BUF", 0, 0)), 12.0)
+
+    # Once the sample is real, the record curve takes over again
+    established = nfl_team("KC", 13, 1)
+    check("13-1 quality is record-based", score.quality_for(established), 10.0)
+    bad = nfl_team("CAR", 1, 13)
+    check("1-13 quality is record-based", score.quality_for(bad), 2.0)
+
+
+def test_neutral_stakes_not_discounted():
+    """
+    The phase multiplier discounts a standings claim. With no standings claim to
+    discount, applying it would charge the same uncertainty twice — which is how
+    an NFL opener reached 3.0/30.
+    """
+    h, a = nfl_team("KC", 0, 0), nfl_team("BUF", 0, 0)
+    s, detail = score.score_stakes(h, a, is_postseason=False)
+    check("neutral stakes use the NFL baseline", s, 15.0)
+    check("neutral stakes detail", detail, "standings not yet meaningful")
+    check_true("no multiplier applied to neutral stakes", "×" not in detail)
+
+
+def test_nfl_opener_is_competitive_but_differentiated():
+    """
+    The fix must lift a marquee opener into contention without lifting every
+    opener — otherwise it trades one calibration bug for another.
+    """
+    marquee = scored(
+        event_wk("NFL", "KC", "BUF", week=1),
+        nfl_team("KC", 0, 0, div="AFC West"), nfl_team("BUF", 0, 0, div="AFC East"))
+    nothing = scored(
+        event_wk("NFL", "CAR", "TEN", week=1),
+        nfl_team("CAR", 0, 0, div="NFC South"), nfl_team("TEN", 0, 0, div="AFC South"))
+
+    check_true(f"marquee opener is competitive (got {marquee.total_score})",
+               marquee.total_score >= 55.0)
+    check_true(f"nothing opener stays low (got {nothing.total_score})",
+               nothing.total_score <= 45.0)
+    check_true("openers are still differentiated",
+               marquee.total_score - nothing.total_score >= 15.0)
+
+    # Ordering against the same matchup with real standings must be preserved:
+    # Week 1 is compelling, Week 12 with both teams contending is more so.
+    late = scored(
+        event_wk("NFL", "KC", "BUF", week=12),
+        nfl_team("KC", 8, 3, seed=1, div="AFC West", streak=("W", 3)),
+        nfl_team("BUF", 8, 3, seed=2, div="AFC East", streak=("W", 2)))
+    check_true("Week 12 still outranks Week 1", late.total_score > marquee.total_score)
+
+
+def test_season_opener_flag():
+    h, a = nfl_team("KC", 0, 0), nfl_team("BUF", 0, 0)
+    check_true("week 1 flags opener",
+               "season_opener" in enrich.detect_flags(event_wk("NFL", "KC", "BUF", week=1), h, a))
+    check_true("week 0 flags opener (college kickoff weekend)",
+               "season_opener" in enrich.detect_flags(event_wk("NCAAF", "OSU", "TEX", week=0),
+                                                     ncaaf_team("OSU", 0, 0, ap_rank=2),
+                                                     ncaaf_team("TEX", 0, 0, ap_rank=4)))
+    check_true("week 2 does not flag opener",
+               "season_opener" not in enrich.detect_flags(event_wk("NFL", "KC", "BUF", week=2), h, a))
+    check_true("missing week does not flag opener",
+               "season_opener" not in enrich.detect_flags(event("NFL", "KC", "BUF"), h, a))
+    check_true("MLB never flags opener",
+               "season_opener" not in enrich.detect_flags(
+                   event_wk("MLB", "LAD", "SD", week=1),
+                   TeamContext(abbr="LAD", name="LAD", sport="MLB", wins=0, losses=0, win_pct=0.0,
+                               l10_wins=0, l10_losses=0, streak_type="W", streak_n=0, games_played=0),
+                   TeamContext(abbr="SD", name="SD", sport="MLB", wins=0, losses=0, win_pct=0.0,
+                               l10_wins=0, l10_losses=0, streak_type="W", streak_n=0, games_played=0)))
+
+
+def test_neutral_stakes_scope():
+    """Neutral stakes apply only when there is genuinely no standings signal."""
+    # A published playoff seed is real information even at 0-0
+    seeded = nfl_team("KC", 0, 0, seed=1)
+    check_true("a published seed suppresses the neutral path",
+               not score._needs_neutral_stakes(seeded, nfl_team("BUF", 0, 0)))
+
+    # NCAAF is exempt — the preseason poll works from Week 1
+    check_true("NCAAF never uses neutral stakes",
+               not score._needs_neutral_stakes(ncaaf_team("OSU", 0, 0, ap_rank=2),
+                                               ncaaf_team("TEX", 0, 0, ap_rank=4)))
+    s, detail = score.score_stakes(ncaaf_team("OSU", 0, 0, ap_rank=2),
+                                   ncaaf_team("TEX", 0, 0, ap_rank=4), is_postseason=False)
+    check_true("NCAAF opener still scores off the poll", "top-10" in detail)
+
+    # MLB has standings from opening day
+    mlb_open = TeamContext(abbr="LAD", name="LAD", sport="MLB", wins=0, losses=0, win_pct=0.0,
+                           l10_wins=0, l10_losses=0, streak_type="W", streak_n=0,
+                           games_played=0, games_back=0.0)
+    check_true("MLB with standings does not use neutral stakes",
+               not score._needs_neutral_stakes(mlb_open, mlb_open))
+
+
+def test_phase_multiplier_is_sport_aware():
+    check("NFL early is mild",   score.season_phase_multiplier(2, 17, "NFL"), 0.90)
+    check("NCAAF early is mild", score.season_phase_multiplier(1, 12, "NCAAF"), 0.90)
+    # MLB and NBA must be untouched — published output depends on them
+    check("MLB early unchanged", score.season_phase_multiplier(10, 162, "MLB"), 0.60)
+    check("MLB mid unchanged",   score.season_phase_multiplier(80, 162, "MLB"), 0.85)
+    check("MLB late unchanged",  score.season_phase_multiplier(150, 162, "MLB"), 1.00)
+    check("NBA early unchanged", score.season_phase_multiplier(5, 82, "NBA"), 0.60)
+    check("unknown sport falls back", score.season_phase_multiplier(10, 162, None), 0.60)
+
+
+def test_explain_hides_empty_record():
+    """A 0-0 record must not reach the LLM as '0-0 (0.000)'."""
+    import explain
+    fresh = nfl_team("KC", 0, 0)
+    check("0-0 renders as unplayed", explain._record(fresh), "no games played yet")
+    played = nfl_team("KC", 3, 1)
+    check_true("real record still renders", "3-1" in explain._record(played))
 
 
 # ---------------------------------------------------------------------------

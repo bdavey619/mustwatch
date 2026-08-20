@@ -48,6 +48,11 @@ def clean_narrative_text(text: str) -> str:
 
 
 def _record(ctx) -> str:
+    # A 0-0 team has not played. Rendering that as "0-0 (0.000)" invites the
+    # model to describe it as winless, so the win pct is withheld until there
+    # is a game behind it.
+    if ctx.games_played == 0:
+        return "no games played yet"
     if ctx.ties:
         return f"{ctx.wins}-{ctx.losses}-{ctx.ties} ({ctx.win_pct:.3f})"
     return f"{ctx.wins}-{ctx.losses} ({ctx.win_pct:.3f})"
@@ -137,6 +142,7 @@ def _flag_labels(flags: list[str]) -> str:
         "division_clash":      "divisional game",
         "conference_clash":    "conference game",
         "undefeated_showdown": "both teams undefeated",
+        "season_opener":       "season opener",
     }
     return ", ".join(label_map.get(f, f) for f in flags) if flags else "none"
 

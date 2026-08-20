@@ -148,6 +148,13 @@ def detect_flags(
             if ev.is_conference_game:
                 flags.append("conference_clash")
 
+        # season_opener — opening weekend is an event in its own right, and
+        # it is the one week where no standings signal exists to carry the
+        # game. Football only: baseball and basketball openers are one of
+        # 162/82 and do not command the same attention.
+        if ev.sport in ("NFL", "NCAAF") and ev.week is not None and ev.week <= 1:
+            flags.append("season_opener")
+
         # undefeated_showdown — both teams unbeaten with a real sample behind
         # them. In football one loss reshapes a season, so an unbeaten team
         # meeting another is the sport's scarcest setup.

@@ -564,6 +564,53 @@ SEASON_PHASE_MULTIPLIERS = {
     "late":  1.00,   # final 30%
 }
 
+# Per-sport phase multipliers.
+#
+# The discount exists to say that a division race in game 15 of 162 is less
+# urgent than the same race in game 140. That reasoning is sound for a long
+# season and much weaker for a short one: a 17-game NFL season has no games
+# that are 40% less consequential than the rest, and the first 20% of it is
+# Weeks 1–4 — some of the highest-attention football of the year.
+#
+# MLB and NBA keep the original curve so published output is unaffected.
+SEASON_PHASE_MULTIPLIERS_BY_SPORT = {
+    "MLB":   SEASON_PHASE_MULTIPLIERS,
+    "NBA":   SEASON_PHASE_MULTIPLIERS,
+    "NFL":   {"early": 0.90, "mid": 0.95, "late": 1.00},
+    "NCAAF": {"early": 0.90, "mid": 0.95, "late": 1.00},
+}
+
+# ---------------------------------------------------------------------------
+# Sample sufficiency — when does a win/loss record start carrying signal?
+#
+# Below these thresholds a record is noise, and the engine must not read it as
+# information. Scoring a 0-0 team as a .000 team makes "nobody has played yet"
+# indistinguishable from "this team is terrible", which is how a Week 1 NFL
+# marquee matchup ended up scoring 36/100.
+# ---------------------------------------------------------------------------
+MIN_GAMES_FOR_RECORD = {
+    "MLB":   20,   # ~12% of 162 — April records swing wildly
+    "NBA":   10,
+    "NFL":    4,
+    "NCAAF":  3,
+}
+
+# Quality assigned when the record carries no signal yet. Mid-scale on the
+# 2–10 range: explicitly "unknown", neither rewarded nor punished.
+NEUTRAL_TEAM_QUALITY = 6.0
+
+# Stakes floor when standings carry no signal yet, by sport.
+#
+# These are not "no stakes" — they reflect how much a single game structurally
+# matters in that sport. One NFL game is 5.9% of a season, which is why its
+# baseline sits well above baseball's.
+NEUTRAL_STAKES_BASE = {
+    "MLB":   10.0,
+    "NBA":   10.0,
+    "NFL":   15.0,
+    "NCAAF": 12.0,
+}
+
 # Timing filter — exclude events starting within N seconds of generation time
 TIMING_FILTER_SECONDS = 3600   # 1 hour
 

@@ -6,7 +6,8 @@ No I/O. All functions take data, return numbers.
 
 from config import (
     MARQUEE_PLAYERS, NCAAF_PROGRAM_PRESTIGE,
-    SEASON_PHASE_MULTIPLIERS,
+    SEASON_PHASE_MULTIPLIERS, SEASON_PHASE_MULTIPLIERS_BY_SPORT,
+    MIN_GAMES_FOR_RECORD, NEUTRAL_TEAM_QUALITY, NEUTRAL_STAKES_BASE,
     MLB_TOTAL_GAMES, NBA_TOTAL_GAMES, NFL_TOTAL_GAMES, NCAAF_TOTAL_GAMES,
     MLB_RACE_THRESHOLD, MLB_WILD_CARD_SPOTS,
     NBA_PLAYOFF_RANK_CUTOFF, NBA_PLAYIN_RANK_CUTOFF,
@@ -86,10 +87,31 @@ def ncaaf_team_quality(ctx: TeamContext) -> float:
     return 2.0
 
 
+def has_record_signal(ctx: TeamContext) -> bool:
+    """
+    True once a team has played enough games for its record to mean something.
+
+    Before this point a win percentage is noise, and treating it as information
+    makes "nobody has played yet" score identically to "this team is terrible".
+    """
+    return ctx.games_played >= MIN_GAMES_FOR_RECORD.get(ctx.sport, 0)
+
+
 def quality_for(ctx: TeamContext) -> float:
-    """Sport-aware team quality."""
+    """
+    Sport-aware team quality.
+
+    When the record carries no signal yet, return an explicit neutral rather
+    than letting a 0-0 team fall to the bottom of the win-pct curve. College
+    football is exempt because its quality comes from the poll, which exists
+    from the preseason onward and does not need a record to be meaningful.
+    """
     if ctx.sport == "NCAAF":
         return ncaaf_team_quality(ctx)
+
+    if not has_record_signal(ctx):
+        return NEUTRAL_TEAM_QUALITY
+
     if ctx.sport == "NFL":
         return nfl_team_quality(ctx.win_pct)
     return team_quality(ctx.win_pct)
@@ -99,15 +121,26 @@ def quality_for(ctx: TeamContext) -> float:
 # Season phase multiplier
 # ---------------------------------------------------------------------------
 
-def season_phase_multiplier(games_played: int, total_games: int) -> float:
+def season_phase_multiplier(games_played: int, total_games: int,
+                            sport: str | None = None) -> float:
+    """
+    Discount regular season stakes by how far into the season we are.
+
+    The curve is per-sport: a 40% haircut on the first fifth of a 162-game
+    season is a fair statement about April baseball, and the same haircut on a
+    17-game season would discount Weeks 1–4 of the NFL, which is not.
+    """
     if total_games == 0:
         return 1.0
+
+    table = SEASON_PHASE_MULTIPLIERS_BY_SPORT.get(sport, SEASON_PHASE_MULTIPLIERS)
+
     pct = games_played / total_games
     if pct < 0.20:
-        return SEASON_PHASE_MULTIPLIERS["early"]
+        return table["early"]
     if pct < 0.70:
-        return SEASON_PHASE_MULTIPLIERS["mid"]
-    return SEASON_PHASE_MULTIPLIERS["late"]
+        return table["mid"]
+    return table["late"]
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +184,18 @@ def score_stakes(
 
         return 29.0, "postseason"
 
+    # Before either team has a meaningful record there is no standings signal
+    # to read, so fall back to how much a single game structurally matters in
+    # this sport rather than concluding the game has no stakes.
+    #
+    # The phase multiplier is deliberately NOT applied here: it exists to
+    # discount a standings-derived claim, and there is no such claim to
+    # discount. Applying it would charge the same uncertainty twice — which is
+    # exactly how an NFL opener reached 3.0/30.
+    if _needs_neutral_stakes(home, away):
+        base = NEUTRAL_STAKES_BASE.get(home.sport, 10.0)
+        return base, "standings not yet meaningful"
+
     if home.sport == "MLB":
         base, detail = _mlb_stakes_base(home, away)
     elif home.sport == "NFL":
@@ -163,11 +208,43 @@ def score_stakes(
     mult = season_phase_multiplier(
         max(home.games_played, away.games_played),
         TOTAL_GAMES.get(home.sport, MLB_TOTAL_GAMES),
+        home.sport,
     )
 
     raw    = round(base * mult, 1)
     detail = f"{detail} ×{mult:.2f}"
     return raw, detail
+
+
+def _needs_neutral_stakes(home: TeamContext, away: TeamContext) -> bool:
+    """
+    True when neither records nor standings position can yet say anything.
+
+    College football is excluded: the preseason AP poll gives every ranked team
+    a meaningful position from Week 1, so its stakes model works with zero games
+    played. A poll-less unranked matchup still falls through to its own low
+    baseline, which is the correct answer rather than a data gap.
+    """
+    if home.sport == "NCAAF":
+        return False
+
+    if has_record_signal(home) or has_record_signal(away):
+        return False
+
+    # A published playoff seed is real standings information even with few
+    # games played — if either side has one, use the normal model.
+    if home.conference_rank is not None or away.conference_rank is not None:
+        return False
+
+    # Same for baseball's division/wild card position.
+    if home.sport == "MLB":
+        if any(v is not None for v in (
+            home.games_back, away.games_back,
+            home.wild_card_rank, away.wild_card_rank,
+        )):
+            return False
+
+    return True
 
 
 def _in_mlb_race(ctx: TeamContext) -> bool:
@@ -524,19 +601,20 @@ def score_narrative_flags(flags: list[str]) -> float:
     """
     Tier 1: elimination_game = 20, no stacking.
     Tier 2: rivalry=8, undefeated_showdown=7, playoff_rematch=6, ace_duel=6,
-            division_clash=6, first_place_clash=5, superstar_matchup=4,
-            momentum_mismatch=4, conference_clash=4, marquee_starter=3,
-            seed_pressure=3. Capped at 12.
+            division_clash=6, first_place_clash=5, season_opener=5,
+            superstar_matchup=4, momentum_mismatch=4, conference_clash=4,
+            marquee_starter=3, seed_pressure=3. Capped at 12.
     marquee_starter only fires when ace_duel is absent (enforced in enrich.py).
     NBA-only: superstar_matchup, momentum_mismatch, seed_pressure.
     NFL-only: division_clash.  NCAAF-only: conference_clash.
-    NFL + NCAAF: undefeated_showdown.
+    NFL + NCAAF: undefeated_showdown, season_opener.
     """
     if "elimination_game" in flags:
         return 20.0
 
     tier2 = 0.0
     if "rivalry"             in flags: tier2 += 8.0
+    if "season_opener"       in flags: tier2 += 5.0
     if "undefeated_showdown" in flags: tier2 += 7.0
     if "playoff_rematch"     in flags: tier2 += 6.0
     if "ace_duel"            in flags: tier2 += 6.0

@@ -183,3 +183,21 @@ The parsing half mattered too: `int(tr.get("wildCardRank", 0))` turned a missing
 The failure mode that motivated this is silence, not errors. A wrong college abbreviation in `NCAAF_RIVALRIES` does not raise — the rivalry simply never fires. A stat that arrives as `displayValue` instead of `value` does not raise — every team reads 0-0. A missing `playoffSeed` does not raise — the stakes model quietly falls back to win-pct tiers. The script checks precisely these, and the same run doubles as a regression check on the MLB wild card fix.
 
 It is also the reason the workflow stays pinned: enabling a sport is now gated on a command that either passes or does not, rather than on judgment about whether the code looks right.
+
+---
+
+## 2026-08-20 — Missing data is not bad data
+
+**Decision:** When a team has played too few games for its record to carry signal, the engine returns an explicit neutral rather than letting the record fall through the normal curves. Introduces `MIN_GAMES_FOR_RECORD`, `NEUTRAL_TEAM_QUALITY`, `NEUTRAL_STAKES_BASE`, and a per-sport season-phase curve.
+
+**Rationale:** An NFL Week 1 matchup between Mahomes and Allen scored 36/100 — below a routine September MLB game at 70 — and would never have reached the top 5. Three components bottomed out simultaneously, all for the same reason: nobody had played yet. `win_pct` of 0.0 mapped to the worst quality tier, no published playoff seed meant stakes fell through to "no meaningful stakes", and the ×0.60 early-season multiplier then cut that in half again.
+
+The underlying error is treating *absence of evidence* as *evidence of absence*. A 0-0 team is not a .000 team. The fix makes the distinction explicit rather than tuning the numbers around it.
+
+Two details matter. First, the multiplier is deliberately not applied to the neutral baseline: the discount exists to say a standings-derived claim is premature, and when there is no standings claim, applying it charges the same uncertainty twice — which is precisely how stakes reached 3.0/30. Second, the phase curve is now per-sport. The original 0.60/0.85/1.00 is a fair statement about April baseball and a poor one about September football, where the first 20% of the season is Weeks 1–4.
+
+College football is exempt from the neutral path: the preseason AP poll gives every ranked team a meaningful position from Week 1, so its stakes model already works with zero games played.
+
+**Calibration check:** A marquee opener moves 36.0 → 60.0. A nothing opener (Panthers/Titans) sits at 41.0, and the same marquee matchup in Week 12 with real standings scores 76.8. The fix lifts openers into contention without lifting them indiscriminately, and preserves the ordering between an opener and a genuine late-season contest.
+
+**Impact beyond football:** MLB and NBA keep their phase curves, so nothing changes there. But the sample-sufficiency rule applies to them too, which shifts competitive balance for the first 20 MLB games and 10 NBA games — an April 9-3 vs 3-9 matchup now scores balance 12.0 rather than 4.0. That is the same bug being fixed consistently, and it is correct, but it is a real change to April output. A preseason prior seeded from prior-year finish would be better than a flat neutral for all four sports; noted in TODO.md.

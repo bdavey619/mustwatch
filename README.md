@@ -82,10 +82,18 @@ The primary driver. Determines how much the result of this game matters.
 - No meaningful stakes: 5
 
 Adjusted by **season-phase multiplier** for regular season games:
-- First 20% of season: ×0.60
-- Mid-season (20–70%): ×0.85
-- Final 30%: ×1.00
-- Postseason: no multiplier (already at max)
+
+| Phase | MLB / NBA | NFL / NCAAF |
+|---|---|---|
+| First 20% | ×0.60 | ×0.90 |
+| Mid (20–70%) | ×0.85 | ×0.95 |
+| Final 30% | ×1.00 | ×1.00 |
+
+Postseason takes no multiplier (already at max). The curve is gentler for football because a 17-game season has no games that are 40% less consequential than the rest — the first 20% of it is Weeks 1–4.
+
+**Sample sufficiency.** Below `MIN_GAMES_FOR_RECORD` games (MLB 20, NBA 10, NFL 4, NCAAF 3), a win/loss record is noise and is not read as information: team quality returns an explicit neutral, and stakes fall back to a per-sport baseline reflecting how much one game structurally matters. The multiplier is *not* applied to that baseline — it exists to discount a standings claim, and there is none to discount.
+
+Without this, a Week 1 NFL marquee matchup scored 3.0/30 on stakes and 36/100 overall, because "nobody has played yet" was indistinguishable from "both teams are terrible".
 
 ### Competitive Balance (0–20 pts)
 Both teams must be good for the game to be watchable. Uses `min(team1_quality, team2_quality) × 2` — one weak team tanks the score regardless of opponent strength.
@@ -112,6 +120,7 @@ Rules-based bonuses for specific detectable conditions. **Phase 1 supports six f
 | `elimination_game` | NBA / NFL / NCAAF | 1 | 20 (no stacking) |
 | `rivalry` | all | 2 | 8 |
 | `undefeated_showdown` | NFL/NCAAF | 2 | 7 |
+| `season_opener` | NFL/NCAAF | 2 | 5 |
 | `playoff_rematch` | MLB/NBA | 2 | 6 |
 | `ace_duel` | MLB | 2 | 6 |
 | `division_clash` | NFL | 2 | 6 |
